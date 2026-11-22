@@ -28,6 +28,8 @@ jobs:
         run: zig fmt --check build.zig src
       - name: Build release binary
         run: zig build --release=fast --summary all
+      - name: Run unit tests
+        run: zig build test --summary all
       # The engine compiles the kernels at start, which needs a model and a GPU. This catches
       # errors in the shader source without them.
       - name: Compile Metal kernels

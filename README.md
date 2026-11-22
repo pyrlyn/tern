@@ -17,6 +17,10 @@ Objective-C runtime from Zig.
 zig build --release=fast
 ```
 
+```bash
+zig build test
+```
+
 ## Model
 
 The engine reads its own `.tern` file: every tensor page-aligned, mapped once and handed to Metal
@@ -37,7 +41,12 @@ uv venv --python 3.12 .venv && uv pip install --python .venv/bin/python mlx-lm
 ```
 
 `gen` takes a file of token ids (tokenization is not part of the engine yet) and prints one JSON
-line: tokens, load time, time to first token, prefill and decode speed, GPU time.
+line: tokens, load time, time to first token, prefill and decode speed, GPU time, and the
+verification passes of speculative decoding per pass size.
+
+Speculative decoding is on by default: when the end of the context repeats something seen
+earlier, the tokens that followed there are verified in one batched pass. The output is the same
+as without it; `--spec 0` turns it off, `--spec n` caps a pass at n tokens.
 
 | Command | Purpose |
 | --- | --- |
@@ -71,6 +80,7 @@ that reads the PQ2_0 GGUF), built in `third_party/llama.cpp-prism`, with the GGU
 | `src/engine.zig` | Buffers, pipelines and the encoding of a token or a batch of tokens |
 | `src/metal.zig` | Metal bindings through `objc_msgSend` |
 | `src/model.zig` | Model constants and the `.tern` reader |
+| `src/draft.zig` | Draft source (prompt lookup) and depth policy of speculative decoding |
 | `src/main.zig` | The command line |
 | `tools/convert.py` | MLX safetensors to `.tern` |
 | `bench/` | Prompts, rendered token ids, bench scripts, results |
@@ -80,7 +90,11 @@ that reads the PQ2_0 GGUF), built in `third_party/llama.cpp-prism`, with the GGU
 - **One pass, any batch.** Every kernel takes a batch of tokens. A batch of 1 is decode, a
   batch of 32 is prefill, and a batch of draft tokens is the verification pass of speculative
   decoding. The matrix product picks its kernel by batch size: lane-split GEMV for one token,
-  lane GEMM for a few, tiled GEMM from 16 tokens up.
+  lane GEMM for a few, an 8-token tile from 8 tokens and a 32-token tile from 16 tokens up.
+- **Speculation without copies.** A verification pass reads the recurrent states of the linear
+  layers and does not write them. The accepted tokens are replayed through the state kernels
+  alone, from inputs the pass left behind; the KV cache needs no rollback because rejected
+  positions are overwritten.
 - **The token stays on the GPU.** Argmax writes the next token id into a GPU buffer, the
   embedding kernel of the next step reads it, and the CPU encodes steps ahead of the GPU.
 - **Hot path.** The engine allocates nothing per token and calls its own code directly

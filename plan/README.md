@@ -28,3 +28,8 @@ Tasks are the folders next to this file. Numbers and the gap to the goals are in
   kernels cannot give +40%. The batched pass is compute-bound instead.
 - The machine was never quiet during the measurements. The GPU throttles for minutes and all
   three engines slow down together, so only interleaved runs are comparable.
+- Speculation with prompt-lookup drafts keeps the reference tokens on the three prompts although
+  the batched pass sums in another order than the single-token pass. It more than doubles decode
+  where the output repeats the prompt (code edit) and gives nothing where it does not: an oracle
+  gate over the same drafts stays below +40% on document QA. The next gain there is a draft
+  model, not a better gate.

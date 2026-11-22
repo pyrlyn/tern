@@ -11,6 +11,7 @@ const std = @import("std");
 const metal = @import("metal.zig");
 const model = @import("model.zig");
 const engine_mod = @import("engine.zig");
+const draft = @import("draft.zig");
 const Engine = engine_mod.Engine;
 const cfg = model.cfg;
 
@@ -34,12 +35,18 @@ const Options = struct {
     lookahead: u32 = 2,
     /// Tokens per batched prefill pass; below `gemm_tokens` the prompt is fed token by token.
     prefill_batch: u32 = 32,
+    /// Speculative decoding with prompt-lookup drafts: most tokens per verification pass
+    /// (0 = off) and the shortest suffix match that starts one. It needs the lane-split state
+    /// kernel and is off without it.
+    spec: u32 = 32,
+    spec_min: u32 = 4,
     dump_dir: ?[]const u8 = null,
     eos: [8]u32 = @splat(std.math.maxInt(u32)),
 
     /// Parses `--flag value` pairs starting at args[first].
     fn parse(args: []const [:0]const u8, first: usize) !Options {
         var opt = Options{};
+        var spec_asked = false;
         var a = first;
         while (a + 1 < args.len) : (a += 2) {
             const flag = args[a];
@@ -50,6 +57,11 @@ const Options = struct {
                 opt.lookahead = @min(max_lookahead, @max(1, try std.fmt.parseInt(u32, value, 10)));
             } else if (std.mem.eql(u8, flag, "--prefill-batch")) {
                 opt.prefill_batch = try std.fmt.parseInt(u32, value, 10);
+            } else if (std.mem.eql(u8, flag, "--spec")) {
+                opt.spec = try std.fmt.parseInt(u32, value, 10);
+                spec_asked = opt.spec != 0;
+            } else if (std.mem.eql(u8, flag, "--spec-min")) {
+                opt.spec_min = @max(1, try std.fmt.parseInt(u32, value, 10));
             } else if (std.mem.eql(u8, flag, "--gemv")) {
                 opt.engine.gemv = value.ptr; // kernel name; pair it with --gemv-rows
             } else if (std.mem.eql(u8, flag, "--gemv-rows")) {
@@ -74,7 +86,11 @@ const Options = struct {
         }
         if (a != args.len) usage();
         const bt = opt.engine.gemm_tokens;
-        opt.engine.max_batch = @max(bt, (opt.prefill_batch + bt - 1) / bt * bt);
+        if (!opt.engine.gdn_sg) {
+            if (spec_asked) return error.SpeculationNeedsGdnSg;
+            opt.spec = 0;
+        }
+        opt.engine.max_batch = @max(bt, (@max(opt.prefill_batch, opt.spec) + bt - 1) / bt * bt);
         return opt;
     }
 };
@@ -101,6 +117,7 @@ fn usage() noreturn {
         \\       tern prof  <model.tern> <position> <batch> [options]
         \\       tern bench <model.tern> <matrix> <iters> <batch> [options]
         \\options: --eos a,b  --lookahead k  --prefill-batch n  --dump dir
+        \\         --spec n (speculative decoding: most tokens per pass, 0 = off)  --spec-min m
         \\         --gemv <kernel> --gemv-rows n  --gemm-rows r --gemm-tokens t --gemm-tile n --gemm-tile8 n --gemm-split 1|2|4
         \\         --gdn-sg 0|1  --attn-sg 0..3 (bit 0 softmax, bit 1 value sum)
         \\
@@ -155,7 +172,7 @@ fn benchMatmul(args: []const [:0]const u8) !void {
         defer pool.pop();
         const cb = engine.queue.commandBuffer();
         const enc = cb.encoder();
-        for (0..iters) |_| engine.matmul(enc, .gemv_in, m, input, output, n);
+        for (0..iters) |_| engine.matmul(enc, .gemv_in, m, input, output, 0, n);
         enc.end();
         cb.commit();
         try cb.wait();
@@ -268,7 +285,7 @@ pub fn main(init: std.process.Init) !void {
         try runPiece(&engine, Engine.encodeEmbed, .{ step, 1 });
         try dump(dir, "embed.bin", engine.x.contents()[0 .. cfg.hidden * 2]);
         for (0..cfg.layers) |i| {
-            try runPiece(&engine, Engine.encodeLayer, .{ i, step, 1 });
+            try runPiece(&engine, Engine.encodeLayer, .{ i, step, 1, .advance });
             var name_buf: [32]u8 = undefined;
             const name = try std.fmt.bufPrint(&name_buf, "layer_{d:0>2}.bin", .{i});
             try dump(dir, name, engine.x.contents()[0 .. cfg.hidden * 2]);
@@ -281,6 +298,11 @@ pub fn main(init: std.process.Init) !void {
 
     // Decode. Step s produces tok[s + 1]; up to `lookahead` command buffers are in flight because
     // the token id is passed on GPU-side.
+    //
+    // With speculation, a verification pass starts whenever the context ends in something seen
+    // before and no step is in flight (`hold` stops new steps once a match shows up). The pass
+    // leaves the recurrent states alone; `pending` counts its accepted tokens until the next
+    // command buffer commits them.
     const last_step = n_prompt + n_gen - 2;
     var ring: [max_lookahead]metal.CommandBuffer = undefined;
     var submitted: u32 = step;
@@ -288,18 +310,73 @@ pub fn main(init: std.process.Init) !void {
     var t_first: f64 = 0;
     var t_last: f64 = 0;
     var n_out: u32 = if (opt.dump_dir != null) 1 else 0;
+    // Tokens that arrived together with the first one; they are not part of the decode speed.
+    var n_first: u32 = 1;
     if (n_out == 1) {
         t_first = now();
         t_last = t_first;
     }
+    var policy = draft.Policy{ .min_match = opt.spec_min, .count = 0 };
+    for ([_]u32{ 4, 8, opt.spec }) |want| {
+        const n = engine.batchFit(@min(want, opt.spec));
+        if (n >= 2 and (policy.count == 0 or n > policy.sizes[policy.count - 1])) {
+            policy.sizes[policy.count] = n;
+            policy.count += 1;
+        }
+    }
+    const spec = policy.count != 0;
+    var pending: u32 = 0;
+    var hold = false;
     var stopped = false;
     while (done <= last_step and !stopped) {
-        while (submitted <= last_step and submitted - done < opt.lookahead) : (submitted += 1) {
+        if (spec and submitted == done) {
+            hold = false;
+            const n = policy.size(last_step + 1 - done);
+            if (if (n != 0) draft.find(tok[0 .. done + 1], policy.min_match) else null) |match| {
+                draft.fill(tok, done, match, n - 1);
+                const pool = metal.Pool.push();
+                defer pool.pop();
+                const cb = engine.queue.commandBuffer();
+                const enc = cb.encoder();
+                if (pending != 0) engine.encodeCommit(enc, pending);
+                engine.encodeVerify(enc, done, n);
+                enc.end();
+                const t_pass = now();
+                cb.commit();
+                try cb.wait();
+                gpu_s += cb.gpuSeconds();
+                // pred[t] follows tok[done + t]: a draft stands while it equals the prediction
+                // before it, and the first prediction that is not confirmed is a new token too.
+                const pred = engine.pred.as(u32);
+                var got: u32 = 1;
+                while (got < n and tok[done + got] == pred[got - 1]) got += 1;
+                tok[done + got] = pred[got - 1];
+                t_last = now();
+                policy.passed(n, got, t_last - t_pass);
+                pending = got;
+                const first = n_out == 0;
+                if (first) t_first = t_last;
+                for (0..got) |_| {
+                    done += 1;
+                    for (opt.eos) |e| {
+                        if (tok[done] == e) stopped = true;
+                    }
+                    if (stopped) break;
+                    n_out += 1;
+                }
+                if (first) n_first = @max(1, n_out);
+                submitted = done;
+                continue;
+            }
+        }
+        while (!hold and submitted <= last_step and submitted - done < opt.lookahead) : (submitted += 1) {
             const pool = metal.Pool.push();
             defer pool.pop();
             const cb = engine.queue.commandBuffer();
             metal.retain(cb.id);
             const enc = cb.encoder();
+            if (pending != 0) engine.encodeCommit(enc, pending);
+            pending = 0;
             engine.encodeToken(enc, submitted, true);
             enc.end();
             cb.commit();
@@ -317,6 +394,11 @@ pub fn main(init: std.process.Init) !void {
             if (produced == e) stopped = true;
         }
         if (!stopped) n_out += 1;
+        if (spec) {
+            policy.plain();
+            hold = done <= last_step and policy.size(last_step + 1 - done) != 0 and
+                draft.find(tok[0 .. done + 1], policy.min_match) != null;
+        }
     }
     // Drain command buffers submitted past an end-of-sequence token.
     while (done < submitted) : (done += 1) {
@@ -326,9 +408,9 @@ pub fn main(init: std.process.Init) !void {
     }
 
     const ttft = t_first - t0;
-    const decode_tps = if (n_out > 1) @as(f64, @floatFromInt(n_out - 1)) / (t_last - t_first) else 0;
+    const decode_tps = if (n_out > n_first) @as(f64, @floatFromInt(n_out - n_first)) / (t_last - t_first) else 0;
     _ = printf(
-        "{\"engine\":\"tern\",\"device\":\"%s\",\"load_s\":%.3f,\"n_prompt\":%u,\"n_gen\":%u,\"ttft_s\":%.4f,\"prefill_s\":%.4f,\"prefill_tps\":%.2f,\"decode_tps\":%.2f,\"gpu_s\":%.3f,\"wall_s\":%.3f,\"lookahead\":%u,\"prefill_batch\":%u,\"tokens\":[",
+        "{\"engine\":\"tern\",\"device\":\"%s\",\"load_s\":%.3f,\"n_prompt\":%u,\"n_gen\":%u,\"ttft_s\":%.4f,\"prefill_s\":%.4f,\"prefill_tps\":%.2f,\"decode_tps\":%.2f,\"gpu_s\":%.3f,\"wall_s\":%.3f,\"lookahead\":%u,\"prefill_batch\":%u,\"spec\":[",
         engine.device.name(),
         t_loaded - t_start,
         n_prompt,
@@ -342,6 +424,11 @@ pub fn main(init: std.process.Init) !void {
         opt.lookahead,
         opt.prefill_batch,
     );
+    for (0..policy.count) |i| {
+        const st = policy.stats[i];
+        _ = printf(if (i == 0) "{\"size\":%u,\"passes\":%u,\"tokens\":%u,\"s\":%.4f}" else ",{\"size\":%u,\"passes\":%u,\"tokens\":%u,\"s\":%.4f}", policy.sizes[i], st.passes, st.tokens, st.seconds);
+    }
+    _ = printf("],\"tokens\":[");
     for (0..n_out) |i| _ = printf(if (i == 0) "%u" else ",%u", tok[n_prompt + i]);
     _ = printf("]}\n");
 }
