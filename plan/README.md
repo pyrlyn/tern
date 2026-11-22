@@ -1,7 +1,7 @@
 # tern
 
-Inference runtime for ternary LLMs on Apple Silicon, written in Zig. No GitHub repository yet;
-the code lives in `~/apps/tern`.
+Inference runtime for ternary LLMs on Apple Silicon, written in Zig.
+[pyrlyn/tern](https://github.com/pyrlyn/tern); the working copy lives in `~/apps/tern`.
 
 Tasks are the folders next to this file. Numbers and the gap to the goals are in
 [REPORT.md](../REPORT.md), the technique survey in [RESEARCH.md](../RESEARCH.md).

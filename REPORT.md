@@ -169,4 +169,4 @@ other two. No goal of the brief is reached today.
   the backend interface ([T6](plan/T6/task.md)).
 - The time split of llama.cpp and MLX-LM themselves (Metal System Trace).
 - The cold-start (`--nvme`) path of the earlier prototype.
-- No commit, branch or pull request yet: the repository is local and has no remote.
+- CI: the repository has no workflow yet, so no pull request can show a green check.
