@@ -317,7 +317,7 @@ pub fn main(init: std.process.Init) !void {
         t_last = t_first;
     }
     var policy = draft.Policy{ .min_match = opt.spec_min, .count = 0 };
-    for ([_]u32{ 4, 8, opt.spec }) |want| {
+    for ([_]u32{ 2, 4, 8, opt.spec }) |want| {
         const n = engine.batchFit(@min(want, opt.spec));
         if (n >= 2 and (policy.count == 0 or n > policy.sizes[policy.count - 1])) {
             policy.sizes[policy.count] = n;

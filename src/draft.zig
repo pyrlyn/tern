@@ -45,15 +45,16 @@ pub fn fill(tok: [*]u32, last: u32, m: Match, n: u32) void {
 
 /// How many tokens the next verification pass carries.
 ///
-/// A pass of 4 tokens costs about as much as 2.8 sequential tokens, one of 8 about 3.6, one of
-/// 17 to 32 about 8 (REPORT.md), so a pass pays off only when most of it is accepted. The depth
-/// starts at the smallest size, moves one size up after a fully accepted pass and falls back to
-/// what was accepted otherwise. A pass that yields at most two tokens is a loss at any size:
-/// it is followed by a pause of `pause` plain tokens, longer after every loss in a row.
+/// A pass of 2 tokens costs about as much as 1.1 sequential tokens, one of 4 about 2.1, one of 8
+/// about 3.5, one of 17 to 32 about 8 (REPORT.md). The first size is nearly free, the larger
+/// ones pay off only when most of the pass is accepted. The depth starts at the smallest size,
+/// moves one size up after a fully accepted pass and falls back to what was accepted otherwise.
+/// A pass that yields at most two tokens without being full is a loss: it is followed by a
+/// pause of `pause` plain tokens, longer after every loss in a row.
 pub const Policy = struct {
     /// Pass sizes, rising; `count` of them are in use.
-    sizes: [3]u32 = .{ 4, 8, 32 },
-    count: u32 = 3,
+    sizes: [max_sizes]u32 = .{ 2, 4, 8, 32 },
+    count: u32 = max_sizes,
     /// Shortest suffix match that starts a pass.
     min_match: u32 = 4,
     pause: u32 = 4,
@@ -64,7 +65,9 @@ pub const Policy = struct {
     cool: u32 = 0,
 
     /// Per pass size: passes run, tokens they produced, wall time they took.
-    stats: [3]Stat = @splat(.{}),
+    stats: [max_sizes]Stat = @splat(.{}),
+
+    pub const max_sizes = 4;
 
     pub const Stat = struct { passes: u32 = 0, tokens: u32 = 0, seconds: f64 = 0 };
 
@@ -124,11 +127,12 @@ test "fill continues a periodic text through its own output" {
 
 test "policy grows on full acceptance and pauses after a loss" {
     var p = Policy{};
+    try std.testing.expectEqual(@as(u32, 2), p.size(100));
+    p.passed(2, 2, 0.1);
     try std.testing.expectEqual(@as(u32, 4), p.size(100));
+    try std.testing.expectEqual(@as(u32, 2), p.size(3));
+    try std.testing.expectEqual(@as(u32, 0), p.size(1));
     p.passed(4, 4, 0.1);
-    try std.testing.expectEqual(@as(u32, 8), p.size(100));
-    try std.testing.expectEqual(@as(u32, 4), p.size(5));
-    try std.testing.expectEqual(@as(u32, 0), p.size(3));
     p.passed(8, 8, 0.1);
     try std.testing.expectEqual(@as(u32, 32), p.size(100));
     p.passed(32, 9, 0.1);
@@ -136,8 +140,8 @@ test "policy grows on full acceptance and pauses after a loss" {
     p.passed(8, 1, 0.1);
     try std.testing.expectEqual(@as(u32, 0), p.size(100));
     for (0..4) |_| p.plain();
-    try std.testing.expectEqual(@as(u32, 4), p.size(100));
-    try std.testing.expectEqual(@as(u32, 2), p.stats[1].passes);
-    try std.testing.expectEqual(@as(u32, 8 + 1), p.stats[1].tokens);
-    try std.testing.expectEqual(@as(u32, 9), p.stats[2].tokens);
+    try std.testing.expectEqual(@as(u32, 2), p.size(100));
+    try std.testing.expectEqual(@as(u32, 2), p.stats[2].passes);
+    try std.testing.expectEqual(@as(u32, 8 + 1), p.stats[2].tokens);
+    try std.testing.expectEqual(@as(u32, 9), p.stats[3].tokens);
 }

@@ -2,7 +2,7 @@
 status: in progress
 priority: P0
 complexity: 5
-readiness: 60%
+readiness: 70%
 agent: Claude Code / claude-fable-5-2
 ---
 
@@ -33,18 +33,21 @@ the non-speculative speed on free text.
    `draft.zig` in CI.
 5. Measure plain against speculative decode interleaved (medians, load given), record in
    REPORT.md.
-6. Open: a draft that works where the prompt is not repeated (document QA, free text). With
-   the measured pass prices the oracle bound of prompt lookup on doc_qa is +36%. The candidates
-   and what they need are in [RESEARCH.md](../../RESEARCH.md#draft-sources-for-ternary-bonsai-27b):
-   Qwen3.5-0.8B, the MTP head of Qwen3.5-27B, Ternary-Bonsai-2-2B. At today's pass prices a
-   draft model breaks even at 84% accepted tokens and reaches +40% at 94%, so:
+6. Lower the price of a short pass: a 2-token pass with a lane kernel of its own as the first
+   pass size (`gemm_t2_r2b2`, sizes 2, 4, 8, 32 in `src/draft.zig`). Kernel variants for a
+   cheaper 4-token and 8-token pass were measured and rejected (REPORT.md).
+7. Open: a draft that works where the prompt is not repeated (free text, the rest of document
+   QA). The candidates and the acceptance they need are in
+   [RESEARCH.md](../../RESEARCH.md#draft-sources-for-ternary-bonsai-27b): Qwen3.5-0.8B, the MTP
+   head of Qwen3.5-27B, Ternary-Bonsai-2-2B. With the 2-token pass a draft model breaks even
+   at 25 to 30% of first draft tokens accepted and reaches +40% at 71 to 82%, so:
    1. measure the acceptance of Qwen3.5-0.8B against the reference tokens offline (needs the
       creator's OK for a 0.63 GB download);
-   2. lower the price of the 4-token and 8-token pass;
-   3. then run the draft model in the engine.
+   2. then run the draft model in the engine.
 
-State: steps 1 to 5 are done. `bench/compare.py`, 3 rounds: decode against llama.cpp and MLX-LM
-+145% and +130% on code_edit, +21% and +12% on doc_qa, +19% and +19% on free_text, `matches_mlx`
-true everywhere. The check below holds for code_edit and free_text, not for doc_qa.
+State: steps 1 to 6 are done. `bench/compare.py`, 3 rounds, with the 2-token pass: decode against
+llama.cpp and MLX-LM +180% and +165% on code_edit, +33% and +22% on doc_qa, +21% and +7% on
+free_text, `matches_mlx` true everywhere. The check below holds for code_edit and free_text, not
+for doc_qa.
 
 Check: `bench/compare.py` shows the tern decode column at +40% or more on code_edit and doc_qa, at 0% or more on free_text, with `matches_mlx` true.

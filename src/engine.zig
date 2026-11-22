@@ -106,7 +106,8 @@ pub const Config = struct {
     gemv: [*:0]const u8 = "auto",
     /// Rows per GEMV thread; ignored with "auto".
     gemv_rows: u32 = 4,
-    /// Batched product: rows per thread and tokens served by one read of the weights.
+    /// Batched product: rows per thread and tokens served by one read of the weights. A pass of
+    /// two tokens has a lane kernel of its own.
     gemm_rows: u32 = 2,
     gemm_tokens: u32 = 4,
     /// Batches of at least this many tokens use the tiled kernel (64 rows x 32 tokens per
@@ -162,6 +163,8 @@ pub const Engine = struct {
     /// thread, so the input is re-read less often.
     k_gemv_wide: metal.Pipeline,
     k_gemm: metal.Pipeline,
+    /// The lane kernel for a pass of two tokens.
+    k_gemm2: metal.Pipeline,
     k_swiglu: metal.Pipeline,
     k_conv: metal.Pipeline,
     k_qk: metal.Pipeline,
@@ -245,6 +248,8 @@ pub const Engine = struct {
         var name_buf: [32]u8 = undefined;
         const gemm_name = try std.fmt.bufPrint(&name_buf, "gemm_t2_r{d}b{d}\x00", .{ config.gemm_rows, config.gemm_tokens });
         self.k_gemm = try lib.pipeline(@ptrCast(gemm_name.ptr));
+        const gemm2_name = try std.fmt.bufPrint(&name_buf, "gemm_t2_r{d}b2\x00", .{config.gemm_rows});
+        self.k_gemm2 = try lib.pipeline(@ptrCast(gemm2_name.ptr));
         self.gemm_rows = config.gemm_rows;
         self.gemm_tokens = config.gemm_tokens;
         self.gemm_tile = config.gemm_tile;
@@ -345,7 +350,7 @@ pub const Engine = struct {
     }
 
     /// out[t] = m * in[t] for n tokens: the GEMV kernel for one token, the tiled kernel from
-    /// `gemm_tile` tokens up, the lane kernel in between (n must then be a multiple of
+    /// `gemm_tile` tokens up, the lane kernel in between (n must then be 2 or a multiple of
     /// `gemm_tokens`). The result goes to `out` at byte offset `out_off`.
     pub inline fn matmul(self: *const Engine, enc: metal.Encoder, part: Part, m: Mat, in: metal.Buffer, out: metal.Buffer, out_off: usize, n: u32) void {
         if (!self.on(part)) return;
@@ -376,6 +381,11 @@ pub const Engine = struct {
             return;
         }
         enc.setParams(&GemvP{ .rows = m.rows, .groups = m.groups }, 4);
+        if (n == 2) {
+            enc.setPipeline(self.k_gemm2);
+            enc.dispatchThreads(size3(32, m.rows / self.gemm_rows, 1), size3(32, 1, 1));
+            return;
+        }
         if (n > 1) {
             std.debug.assert(n % self.gemm_tokens == 0);
             enc.setPipeline(self.k_gemm);
@@ -424,7 +434,8 @@ pub const Engine = struct {
         const m = @min(n, self.max_batch);
         if (self.gemm_tile != 0 and m >= self.gemm_tile) return m;
         if (self.gemm_tile8 != 0 and m >= self.gemm_tile8) return m;
-        return m / self.gemm_tokens * self.gemm_tokens;
+        if (m >= self.gemm_tokens) return m / self.gemm_tokens * self.gemm_tokens;
+        return if (m >= 2) 2 else 0;
     }
 
     /// One decoder layer for n tokens at positions pos .. pos + n. Leaves the layer output in `x`

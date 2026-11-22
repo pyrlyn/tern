@@ -165,6 +165,8 @@ GEMV_T2(gemv_t2_sgm16, 16)
 // Batched product (prefill, multi-token verification): Y[t] = W * X[t]. Same lane layout; a
 // thread unpacks each weight word once into exact -1/0/+1 floats and uses it for BT tokens, so
 // the weights are read once per BT tokens. X is [batch][cols], Y is [batch][rows].
+// With BT = 2 the product stays close to the memory bound of the single-token kernel: two
+// tokens cost about 1.1 times one. From BT = 4 on the arithmetic sets the time.
 // Grid (32, rows / R, batch / BT), threadgroup (32, 1, 1).
 #define GEMM_T2(NAME, R, BT)                                                                      \
 kernel void NAME(device const uint *W [[buffer(0)]],                                              \
@@ -212,6 +214,9 @@ kernel void NAME(device const uint *W [[buffer(0)]],                            
     }                                                                                             \
 }
 
+GEMM_T2(gemm_t2_r1b2, 1, 2)
+GEMM_T2(gemm_t2_r2b2, 2, 2)
+GEMM_T2(gemm_t2_r4b2, 4, 2)
 GEMM_T2(gemm_t2_r1b4, 1, 4)
 GEMM_T2(gemm_t2_r2b4, 2, 4)
 GEMM_T2(gemm_t2_r2b8, 2, 8)
