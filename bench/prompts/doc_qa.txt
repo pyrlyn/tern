@@ -1,0 +1,13 @@
+Read the incident report below, then answer the question. Quote the exact sentences from the report that support each part of your answer.
+
+Incident report 2291: checkout latency regression
+
+On Tuesday at 09:14 UTC the checkout service began returning responses with a p99 latency of 4.8 seconds, up from the usual 310 milliseconds. The on-call engineer was paged at 09:21 UTC after the latency alert had been firing for five minutes. Initial investigation focused on the payments gateway because a provider maintenance window had been announced for the same morning. That turned out to be unrelated: the gateway's own latency stayed under 120 milliseconds for the whole incident.
+
+At 09:47 UTC the engineer noticed that the connection pool of the inventory database was saturated at its limit of 40 connections. A deployment at 09:10 UTC had introduced a new stock reservation query that held a row lock while calling the pricing service over HTTP. Whenever the pricing service was slow, each reservation kept its connection for several seconds, and the pool ran dry. Requests then queued inside the checkout service waiting for a free connection.
+
+The deployment was rolled back at 10:02 UTC and latency returned to normal by 10:06 UTC. In total, 3,412 checkout attempts timed out and roughly 1,900 customers saw an error page. No orders were charged twice, because the payment step runs only after the reservation succeeds.
+
+Follow-up actions: move the pricing call outside the transaction, add a 500 millisecond timeout to the pricing client, raise an alert when pool usage exceeds 80 percent for two minutes, and add a load test that simulates a slow pricing service before every release of the checkout service.
+
+Question: What was the root cause of the latency regression, why was the payments gateway ruled out, and which follow-up actions directly address the root cause?

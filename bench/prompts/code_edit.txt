@@ -1,0 +1,53 @@
+Here is a Python module. Rename the parameter `items` to `records` everywhere in `summarize`, add a new optional parameter `precision: int = 2` to `summarize` and use it when rounding instead of the hard-coded 2. Output the complete updated module and nothing else.
+
+```python
+import math
+from collections import defaultdict
+from dataclasses import dataclass
+
+
+@dataclass
+class Stat:
+    count: int
+    total: float
+    mean: float
+    stddev: float
+
+
+def parse_line(line: str) -> tuple[str, float]:
+    key, _, value = line.partition("=")
+    key = key.strip()
+    if not key:
+        raise ValueError(f"missing key in line: {line!r}")
+    return key, float(value.strip())
+
+
+def summarize(items: list[tuple[str, float]]) -> dict[str, Stat]:
+    groups: dict[str, list[float]] = defaultdict(list)
+    for key, value in items:
+        groups[key].append(value)
+    result: dict[str, Stat] = {}
+    for key, values in sorted(groups.items()):
+        count = len(values)
+        total = sum(values)
+        mean = total / count
+        variance = sum((v - mean) ** 2 for v in values) / count
+        result[key] = Stat(
+            count=count,
+            total=round(total, 2),
+            mean=round(mean, 2),
+            stddev=round(math.sqrt(variance), 2),
+        )
+    return result
+
+
+def load(path: str) -> list[tuple[str, float]]:
+    items = []
+    with open(path, encoding="utf-8") as handle:
+        for raw in handle:
+            raw = raw.strip()
+            if not raw or raw.startswith("#"):
+                continue
+            items.append(parse_line(raw))
+    return items
+```

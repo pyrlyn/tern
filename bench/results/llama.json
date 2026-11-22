@@ -1,0 +1,71 @@
+{
+ "engine": "llama.cpp (PrismML fork, Metal)",
+ "prompts": {
+  "free_text": {
+   "n_prompt": 38,
+   "n_prompt_matches": true,
+   "decode_tps": 14.969575653903412,
+   "decode_tps_all": [
+    14.85,
+    14.97,
+    15.11
+   ],
+   "prefill_tps": 95.88695432752965,
+   "ttft_s": 0.3963,
+   "load_s": 0.5046,
+   "load1": [
+    10.3,
+    9.5,
+    8.9
+   ],
+   "deterministic": true,
+   "same_chars_as_mlx": 859,
+   "mlx_chars": 859,
+   "text": "The fog did not roll in; it descended like a heavy, wet wool blanket, smothering the sound of the Atlantic until the world was reduced to the rhythmic *thrum-click* of the Fresnel lens and the groan of the iron tower. Elias had kept the light for forty-two years. He knew the rhythm of the glass, the smell of the oil, the way the beam cut through the dark like a silver scalpel.\n\nBut tonight, the beam was hungry.\n\nIt was not the usual hunger of ships seeking a harbor, nor the desperate, blinking panic of a storm-tossed vessel. This was a slow, viscous pull. The light, usually a steady sentinel, seemed to thicken, stretching toward the horizon like taffy.\n\nElias wiped his eyes, his breath pluming in the cold air of the lantern room. He adjusted the clockwork mechanism, his fingers trembling slightly. The beam swept across the black water, and for the\n\n"
+  },
+  "code_edit": {
+   "n_prompt": 427,
+   "n_prompt_matches": true,
+   "decode_tps": 17.492106577032075,
+   "decode_tps_all": [
+    17.49,
+    17.3,
+    17.94
+   ],
+   "prefill_tps": 114.97100145935089,
+   "ttft_s": 3.71398,
+   "load_s": 0.48318,
+   "load1": [
+    17.9,
+    16.2,
+    14.0
+   ],
+   "deterministic": true,
+   "same_chars_as_mlx": 752,
+   "mlx_chars": 752,
+   "text": "```python\nimport math\nfrom collections import defaultdict\nfrom dataclasses import dataclass\n\n\n@dataclass\nclass Stat:\n    count: int\n    total: float\n    mean: float\n    stddev: float\n\n\ndef parse_line(line: str) -> tuple[str, float]:\n    key, _, value = line.partition(\"=\")\n    key = key.strip()\n    if not key:\n        raise ValueError(f\"missing key in line: {line!r}\")\n    return key, float(value.strip())\n\n\ndef summarize(records: list[tuple[str, float]], precision: int = 2) -> dict[str, Stat]:\n    groups: dict[str, list[float]] = defaultdict(list)\n    for key, value in records:\n        groups[key].append(value)\n    result: dict[str, Stat] = {}\n    for key, values in sorted(groups.items()):\n        count = len(values)\n        total = sum(values)\n\n"
+  },
+  "doc_qa": {
+   "n_prompt": 423,
+   "n_prompt_matches": true,
+   "decode_tps": 16.68286049859118,
+   "decode_tps_all": [
+    16.68,
+    17.67,
+    16.45
+   ],
+   "prefill_tps": 116.04078710218997,
+   "ttft_s": 3.64527,
+   "load_s": 0.49057999999999996,
+   "load1": [
+    13.4,
+    13.4,
+    11.7
+   ],
+   "deterministic": true,
+   "same_chars_as_mlx": 925,
+   "mlx_chars": 925,
+   "text": "Based on the incident report, here is the breakdown of the root cause, why the payments gateway was ruled out, and the follow-up actions that address the root cause:\n\n**1. Root Cause of the Latency Regression**\nThe root cause was a deployment at 09:10 UTC that introduced a new stock reservation query which held a row lock while calling the pricing service over HTTP. When the pricing service was slow, each reservation kept its database connection for several seconds, causing the connection pool to become saturated.\n\n*Supporting quotes:*\n- “A deployment at 09:10 UTC had introduced a new stock reservation query that held a row lock while calling the pricing service over HTTP.”\n- “Whenever the pricing service was slow, each reservation kept its connection for several seconds, and the pool ran dry.”\n- “At 09:47 UTC the engineer noticed that the connection pool of the inventory database was saturated at its limit of 4\n\n"
+  }
+ }
+}
