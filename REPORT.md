@@ -43,9 +43,48 @@ Single runs of decode, tok/s: llama.cpp 20.5 to 20.7, 18.0 to 21.5, 17.2 to 21.6
 one engine is as large as the differences between engines, so decode is a tie, with tern at or
 slightly above the other two.
 
-Best state seen in this session (not simultaneous, load 5 to 12, so only an indication): MLX-LM
-38.7 / 36.6 / 29.5 tok/s decode and 109 / 156 / 164 tok/s prefill; tern 38.5 tok/s decode on
-free_text before the prefill work. llama.cpp was never measured in that state.
+### Second run: the fast state, for a few minutes
+
+A second interleaved run (`bench/results/compare_fast.json`, same build apart from formatting)
+was started when the machine had left its slow state. That lasted for the first prompt of the
+first round; then the load rose from 11 to 78 and the machine fell back.
+
+The one set of measurements taken in the fast state, back to back, load 11 to 13, one run per
+engine after its warm-up (free_text, 38 prompt tokens):
+
+| Metric | llama.cpp | MLX-LM | tern | tern vs llama.cpp | tern vs MLX-LM |
+| --- | --- | --- | --- | --- | --- |
+| decode, tok/s | 30.2 | 38.2 | 38.9 | +29% | +2% |
+| prefill, tok/s | 120.1 | 104.3 | 118.2 | -2% | +13% |
+| first token, s | 0.32 | 0.36 | 0.32 | 0% | -11% |
+
+This is one run per engine, not a median, so it is an indication and not a result. It does say
+two things the slow-state table cannot: tern and MLX-LM are level at about 38 to 39 tok/s when
+the machine allows it, and llama.cpp was slower there. Its two best runs in the whole session are
+30.2 and 30.4 tok/s, on two different prompts.
+
+The rest of that run mixes both states, and its medians mean little. All single runs, in the
+order of the rounds:
+
+| Prompt | Engine | decode, tok/s | prefill, tok/s | load at start |
+| --- | --- | --- | --- | --- |
+| free_text | llama.cpp | 30.2, 14.2, 13.1 | 120.1, 54.5, 47.7 | 11.0, 26.3, 9.6 |
+| | MLX-LM | 38.2, 14.8, 12.9 | 104.3, 51.9, 48.0 | 13.4, 30.1, 23.2 |
+| | tern | 38.9, 15.5, 11.3 | 118.2, 61.4, 35.8 | 13.3, 27.3, 10.0 |
+| code_edit | llama.cpp | 9.2, 30.4, 12.3 | 46.6, 211.1, 88.8 | 32.0, 29.6, 21.5 |
+| | MLX-LM | 26.9, 24.7, 13.5 | 185.4, 147.2, 86.7 | 11.9, 25.2, 44.7 |
+| | tern | 21.3, 28.7, 14.9 | 123.0, 153.7, 64.2 | 10.9, 42.0, 29.8 |
+| doc_qa | llama.cpp | 13.3, 21.1, 12.6 | 108.9, 162.3, 114.8 | 10.8, 20.4, 77.8 |
+| | MLX-LM | 15.6, 15.7, 12.8 | 89.2, 106.8, 78.3 | 22.1, 18.0, 22.8 |
+| | tern | 13.6, 11.1, 17.9 | 62.3, 52.6, 70.2 | 18.7, 14.3, 41.2 |
+
+Best prefill of each engine on code_edit in this run, not at the same moment: llama.cpp 211
+tok/s, MLX-LM 185, tern 154. That is the same order as in the slow-state table, so the prefill
+gap is real in both states. Tokens: tern equal to MLX-LM in every run, llama.cpp text equal to
+MLX-LM, MLX-LM equal to its own reference.
+
+Earlier best values, also not simultaneous (load 5 to 12): MLX-LM 38.7 / 36.6 / 29.5 tok/s decode
+and 109 / 156 / 164 tok/s prefill; tern 38.5 tok/s decode on free_text before the prefill work.
 
 | Goal | Baseline | Ours | Difference | Reached | Where we lose |
 | --- | --- | --- | --- | --- | --- |
@@ -156,8 +195,9 @@ pass (64 gives +5%, measured, not adopted yet), and the GEMM itself. One observa
 explanation yet: tern's prefill fell from about 120 to about 95 tok/s when the machine went from
 its medium to its slow state, more than llama.cpp's did.
 
-**Honest summary.** Decode: parity with both engines, a few percent ahead, 0 of the 40 points
-that need speculation. Prefill: 2.3 times faster than the first batched kernel and about 3 times faster than token by
+**Honest summary.** Decode: parity with MLX-LM in both states of the machine; against llama.cpp
+parity in the slow state and +29% in the single fast-state measurement, which has to be repeated
+before it counts. 0 of the 40 points that need speculation. Prefill: 2.3 times faster than the first batched kernel and about 3 times faster than token by
 token, not yet at the level of the
 other two. No goal of the brief is reached today.
 
