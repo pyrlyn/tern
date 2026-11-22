@@ -1,0 +1,201 @@
+{
+ "rounds": 3,
+ "max_tokens": 200,
+ "prompts": {
+  "free_text": {
+   "llama.cpp": {
+    "decode_tps": 14.748803419943643,
+    "decode_tps_all": [
+     15.69,
+     14.75,
+     14.38
+    ],
+    "prefill_tps": 67.85714285714285,
+    "prefill_tps_all": [
+     67.9,
+     66.9,
+     100.7
+    ],
+    "ttft_s": 0.56,
+    "load1": [
+     62.3,
+     55.2,
+     13.8
+    ],
+    "text_equals_mlx": true
+   },
+   "mlx-lm": {
+    "decode_tps": 14.735182029806856,
+    "decode_tps_all": [
+     14.74,
+     14.01,
+     15.46
+    ],
+    "prefill_tps": 55.90760386092497,
+    "prefill_tps_all": [
+     40.0,
+     60.9,
+     55.9
+    ],
+    "ttft_s": 0.6796928749536164,
+    "load1": [
+     72.4,
+     57.2,
+     27.8
+    ],
+    "matches_reference": true
+   },
+   "tern": {
+    "decode_tps": 17.5,
+    "decode_tps_all": [
+     20.91,
+     17.5,
+     16.63
+    ],
+    "prefill_tps": 53.24,
+    "prefill_tps_all": [
+     53.2,
+     46.5,
+     67.2
+    ],
+    "ttft_s": 0.7137,
+    "load1": [
+     68.3,
+     64.1,
+     17.9
+    ],
+    "matches_mlx": true
+   }
+  },
+  "code_edit": {
+   "llama.cpp": {
+    "decode_tps": 14.566791667795167,
+    "decode_tps_all": [
+     14.57,
+     13.48,
+     15.04
+    ],
+    "prefill_tps": 104.37239680087605,
+    "prefill_tps_all": [
+     117.7,
+     101.2,
+     104.4
+    ],
+    "ttft_s": 4.09112,
+    "load1": [
+     73.0,
+     41.9,
+     23.6
+    ],
+    "text_equals_mlx": true
+   },
+   "mlx-lm": {
+    "decode_tps": 15.461185356547004,
+    "decode_tps_all": [
+     17.55,
+     15.46,
+     15.38
+    ],
+    "prefill_tps": 98.68336191635588,
+    "prefill_tps_all": [
+     98.7,
+     105.6,
+     94.4
+    ],
+    "ttft_s": 4.326970542024355,
+    "load1": [
+     87.7,
+     41.3,
+     27.5
+    ],
+    "matches_reference": true
+   },
+   "tern": {
+    "decode_tps": 35.63,
+    "decode_tps_all": [
+     39.53,
+     34.32,
+     35.63
+    ],
+    "prefill_tps": 70.78,
+    "prefill_tps_all": [
+     82.9,
+     69.0,
+     70.8
+    ],
+    "ttft_s": 6.0325,
+    "load1": [
+     77.2,
+     59.0,
+     21.3
+    ],
+    "matches_mlx": true
+   }
+  },
+  "doc_qa": {
+   "llama.cpp": {
+    "decode_tps": 14.183719798120764,
+    "decode_tps_all": [
+     14.18,
+     15.15,
+     14.02
+    ],
+    "prefill_tps": 97.73906212091453,
+    "prefill_tps_all": [
+     91.6,
+     97.7,
+     108.3
+    ],
+    "ttft_s": 4.327850000000001,
+    "load1": [
+     72.8,
+     39.2,
+     14.5
+    ],
+    "text_equals_mlx": true
+   },
+   "mlx-lm": {
+    "decode_tps": 15.351642732340759,
+    "decode_tps_all": [
+     16.58,
+     14.91,
+     15.35
+    ],
+    "prefill_tps": 94.55035397290311,
+    "prefill_tps_all": [
+     98.5,
+     91.4,
+     94.6
+    ],
+    "ttft_s": 4.47380662499927,
+    "load1": [
+     73.5,
+     32.8,
+     17.1
+    ],
+    "matches_reference": true
+   },
+   "tern": {
+    "decode_tps": 17.14,
+    "decode_tps_all": [
+     16.58,
+     17.14,
+     20.84
+    ],
+    "prefill_tps": 72.59,
+    "prefill_tps_all": [
+     70.3,
+     72.6,
+     82.4
+    ],
+    "ttft_s": 5.8275,
+    "load1": [
+     113.5,
+     24.8,
+     13.7
+    ],
+    "matches_mlx": true
+   }
+  }
+ }
+}

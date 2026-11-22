@@ -29,6 +29,8 @@ const Layer = struct {
     adt: usize = 0,
     gnorm: usize = 0,
     state: usize = 0,
+    /// Offset of this layer's input projection in `lin_proj`.
+    proj: usize = 0,
     // full attention
     qn: usize = 0,
     kn: usize = 0,
@@ -45,17 +47,23 @@ const GemmP = extern struct { rows: u32, groups: u32, n: u32, ksplit: u32 };
 const split_rows = 8192;
 const split2_rows = 20480;
 const split_part_rows = 2 * split2_rows;
-const ConvP = extern struct { n: u32, batch: u32, ps: u32 };
+const ConvP = extern struct { n: u32, batch: u32, ps: u32, write: u32 };
 const QkP = extern struct { hk: u32, dk: u32, cs: u32 };
-const GdnP = extern struct { hv: u32, hk: u32, dk: u32, dv: u32, b_off: u32, a_off: u32, v_off: u32, batch: u32, ps: u32, cs: u32 };
+const GdnP = extern struct { hv: u32, hk: u32, dk: u32, dv: u32, b_off: u32, a_off: u32, v_off: u32, batch: u32, ps: u32, cs: u32, write: u32 };
 const GnormP = extern struct { dv: u32, hv: u32, z_off: u32, ps: u32, eps: f32 };
 const PrepP = extern struct { nh: u32, nkv: u32, hd: u32, pos: u32, rot: u32, ps: u32, eps: f32, log_base: f32 };
 const ScoreP = extern struct { nh: u32, nkv: u32, hd: u32, pos: u32, stride: u32, ps: u32, scale: f32 };
-const ArgmaxP = extern struct { n: u32, step: u32 };
+const ArgmaxP = extern struct { n: u32, at: u32 };
 
 const conv_state_bytes = (cfg.conv_taps - 1) * cfg.conv_dim * 2;
 const delta_state_bytes = cfg.lin_v_heads * cfg.lin_dv * cfg.lin_dk * 4;
 const lin_state_bytes = conv_state_bytes + delta_state_bytes;
+/// Length of a linear layer's input projection [qkv | z | b | a].
+const lin_ps = cfg.conv_dim + cfg.lin_v_heads * cfg.lin_dv + 2 * cfg.lin_v_heads;
+
+/// What a pass does with the recurrent state of the linear-attention layers: `advance` stores
+/// the state after its last token, `peek` leaves the stored state alone (speculative pass).
+pub const State = enum { advance, peek };
 
 /// Kernel classes of one token, for the per-class time breakdown (`tern prof`).
 pub const Part = enum(u5) {
@@ -106,7 +114,7 @@ pub const Config = struct {
     gemm_tile: u32 = 16,
     /// Batches of at least this many tokens, and fewer than `gemm_tile`, use the 8-token tile;
     /// 0 turns it off.
-    gemm_tile8: u32 = 0,
+    gemm_tile8: u32 = 8,
     /// Column split of the tiled kernel for matrices with few rows (1 = off, 2 or 4).
     gemm_split: u32 = 4,
     /// Lane-split variants of the latency-bound kernels. They sum in a different order than the
@@ -130,6 +138,9 @@ pub const Engine = struct {
     x: metal.Buffer,
     xn: metal.Buffer,
     proj: metal.Buffer,
+    /// Input projections of the linear layers, one slot of `max_batch` tokens per layer: they
+    /// outlive the pass so that `encodeCommit` can replay the accepted tokens of a `peek` pass.
+    lin_proj: metal.Buffer,
     tmp: metal.Buffer,
     r: metal.Buffer,
     conv_out: metal.Buffer,
@@ -138,6 +149,8 @@ pub const Engine = struct {
     qrot: metal.Buffer,
     scores: metal.Buffer,
     logits: metal.Buffer,
+    /// Greedy successor of every token of the last `encodeVerify` pass.
+    pred: metal.Buffer,
     tok: metal.Buffer,
     state: metal.Buffer,
     kv: metal.Buffer,
@@ -208,6 +221,7 @@ pub const Engine = struct {
         self.x = try device.buffer(mb * cfg.hidden * 2);
         self.xn = try device.buffer(mb * cfg.hidden * 2);
         self.proj = try device.buffer(mb * 2 * cfg.inter * 2);
+        self.lin_proj = try device.buffer(cfg.n_linear * mb * lin_ps * 2);
         self.tmp = try device.buffer(mb * cfg.inter * 2);
         self.r = try device.buffer(mb * cfg.hidden * 2);
         self.conv_out = try device.buffer(mb * cfg.conv_dim * 2);
@@ -215,7 +229,8 @@ pub const Engine = struct {
         self.y = try device.buffer(mb * cfg.lin_v_heads * cfg.lin_dv * 2);
         self.qrot = try device.buffer(mb * cfg.heads * cfg.head_dim * 2);
         self.scores = try device.buffer(mb * cfg.heads * max_ctx * 4);
-        self.logits = try device.buffer(cfg.vocab * 2);
+        self.logits = try device.buffer(mb * cfg.vocab * 2);
+        self.pred = try device.buffer(mb * 4);
         self.tok = try device.buffer((@as(usize, max_ctx) + 1) * 4);
         self.state = try device.buffer(cfg.n_linear * lin_state_bytes);
         self.kv = try device.buffer(@as(usize, cfg.n_full) * 2 * kvBytes(max_ctx));
@@ -294,6 +309,8 @@ pub const Engine = struct {
                 l.adt = (try file.findFmt("L{d}.adt", .{i})).offset;
                 l.gnorm = (try file.findFmt("L{d}.gnorm", .{i})).offset;
                 l.state = n_lin * lin_state_bytes;
+                l.proj = n_lin * mb * lin_ps * 2;
+                if (l.in.rows != lin_ps) return error.UnexpectedProjectionSize;
                 n_lin += 1;
             } else {
                 l.qn = (try file.findFmt("L{d}.qn", .{i})).offset;
@@ -329,13 +346,13 @@ pub const Engine = struct {
 
     /// out[t] = m * in[t] for n tokens: the GEMV kernel for one token, the tiled kernel from
     /// `gemm_tile` tokens up, the lane kernel in between (n must then be a multiple of
-    /// `gemm_tokens`).
-    pub inline fn matmul(self: *const Engine, enc: metal.Encoder, part: Part, m: Mat, in: metal.Buffer, out: metal.Buffer, n: u32) void {
+    /// `gemm_tokens`). The result goes to `out` at byte offset `out_off`.
+    pub inline fn matmul(self: *const Engine, enc: metal.Encoder, part: Part, m: Mat, in: metal.Buffer, out: metal.Buffer, out_off: usize, n: u32) void {
         if (!self.on(part)) return;
         enc.setBuffer(self.weights, m.w, 0);
         enc.setBuffer(self.weights, m.s, 1);
         enc.setBuffer(in, 0, 2);
-        enc.setBuffer(out, 0, 3);
+        enc.setBuffer(out, out_off, 3);
         const wide_tile = self.gemm_tile != 0 and n >= self.gemm_tile;
         if (wide_tile or (self.gemm_tile8 != 0 and n >= self.gemm_tile8)) {
             const split: u32 = if (self.gemm_split == 1 or m.rows > split2_rows) 1 else if (m.rows <= split_rows) self.gemm_split else 2;
@@ -352,7 +369,7 @@ pub const Engine = struct {
             if (split != 1) {
                 enc.setPipeline(self.k_gemm_reduce);
                 enc.setBuffer(self.part, 0, 0);
-                enc.setBuffer(out, 0, 1);
+                enc.setBuffer(out, out_off, 1);
                 enc.setParams(&params, 2);
                 enc.dispatchThreads(size1(m.rows * n), size1(256));
             }
@@ -402,16 +419,38 @@ pub const Engine = struct {
         self.norm(enc, self.layers[0].n1, false, n);
     }
 
+    /// The largest batch of at most n tokens that one pass can carry (0 when n is too small).
+    pub fn batchFit(self: *const Engine, n: u32) u32 {
+        const m = @min(n, self.max_batch);
+        if (self.gemm_tile != 0 and m >= self.gemm_tile) return m;
+        if (self.gemm_tile8 != 0 and m >= self.gemm_tile8) return m;
+        return m / self.gemm_tokens * self.gemm_tokens;
+    }
+
     /// One decoder layer for n tokens at positions pos .. pos + n. Leaves the layer output in `x`
     /// and the next layer's normalised input in `xn`.
-    pub fn encodeLayer(self: *const Engine, enc: metal.Encoder, i: usize, pos: u32, n: u32) void {
+    pub fn encodeLayer(self: *const Engine, enc: metal.Encoder, i: usize, pos: u32, n: u32, state: State) void {
         const l = &self.layers[i];
-        self.matmul(enc, .gemv_in, l.in, self.xn, self.proj, n);
-        if (l.linear) self.encodeLinearAttn(enc, l, n) else self.encodeFullAttn(enc, l, pos, n);
-        self.matmul(enc, .gemv_out, l.out, self.tmp, self.r, n);
+        if (l.linear) {
+            self.matmul(enc, .gemv_in, l.in, self.xn, self.lin_proj, l.proj, n);
+            self.encodeGdn(enc, l, n, state == .advance);
+            if (self.on(.gdn_norm)) {
+                enc.setPipeline(self.k_gnorm);
+                enc.setBuffer(self.y, 0, 0);
+                enc.setBuffer(self.weights, l.gnorm, 1);
+                enc.setBuffer(self.lin_proj, l.proj, 2);
+                enc.setBuffer(self.tmp, 0, 3);
+                enc.setParams(&GnormP{ .dv = cfg.lin_dv, .hv = cfg.lin_v_heads, .z_off = cfg.conv_dim, .ps = lin_ps, .eps = cfg.eps }, 4);
+                enc.dispatchGroups(size3(1, cfg.lin_v_heads, n), size3(cfg.lin_dv, 1, 1));
+            }
+        } else {
+            self.matmul(enc, .gemv_in, l.in, self.xn, self.proj, 0, n);
+            self.encodeFullAttn(enc, l, pos, n);
+        }
+        self.matmul(enc, .gemv_out, l.out, self.tmp, self.r, 0, n);
         self.norm(enc, l.n2, true, n);
 
-        self.matmul(enc, .gemv_mlp, l.mlp, self.xn, self.proj, n);
+        self.matmul(enc, .gemv_mlp, l.mlp, self.xn, self.proj, 0, n);
         if (self.on(.swiglu)) {
             enc.setPipeline(self.k_swiglu);
             enc.setBuffer(self.proj, 0, 0);
@@ -419,22 +458,24 @@ pub const Engine = struct {
             enc.setParams(&@as(u32, cfg.inter), 2);
             enc.dispatchThreads(size2(cfg.inter, n), size2(256, 1));
         }
-        self.matmul(enc, .gemv_down, l.down, self.tmp, self.r, n);
+        self.matmul(enc, .gemv_down, l.down, self.tmp, self.r, 0, n);
         self.norm(enc, if (i + 1 < cfg.layers) self.layers[i + 1].n1 else self.final_norm, true, n);
     }
 
-    fn encodeLinearAttn(self: *const Engine, enc: metal.Encoder, l: *const Layer, n: u32) void {
+    /// Gated delta net of one linear layer over the first n tokens of its slot in `lin_proj`:
+    /// conv, q/k norm, and the state recurrence with its readout in `y`. With `write` the conv
+    /// and delta-rule states are stored as they are after token n - 1.
+    fn encodeGdn(self: *const Engine, enc: metal.Encoder, l: *const Layer, n: u32, write: bool) void {
         const key_dim = cfg.lin_k_heads * cfg.lin_dk;
         const value_dim = cfg.lin_v_heads * cfg.lin_dv;
-        const ps = l.in.rows; // proj = [qkv | z | b | a] per token
 
         if (self.on(.gdn_conv)) {
             enc.setPipeline(self.k_conv);
-            enc.setBuffer(self.proj, 0, 0);
+            enc.setBuffer(self.lin_proj, l.proj, 0);
             enc.setBuffer(self.weights, l.conv, 1);
             enc.setBuffer(self.state, l.state, 2);
             enc.setBuffer(self.conv_out, 0, 3);
-            enc.setParams(&ConvP{ .n = cfg.conv_dim, .batch = n, .ps = ps }, 4);
+            enc.setParams(&ConvP{ .n = cfg.conv_dim, .batch = n, .ps = lin_ps, .write = @intFromBool(write) }, 4);
             enc.dispatchThreads(size1(cfg.conv_dim), size1(256));
         }
         if (self.on(.gdn_qk)) {
@@ -448,7 +489,7 @@ pub const Engine = struct {
             enc.setPipeline(self.k_gdn);
             enc.setBuffer(self.qk, 0, 0);
             enc.setBuffer(self.conv_out, 0, 1);
-            enc.setBuffer(self.proj, 0, 2);
+            enc.setBuffer(self.lin_proj, l.proj, 2);
             enc.setBuffer(self.weights, l.adt, 3);
             enc.setBuffer(self.state, l.state + conv_state_bytes, 4);
             enc.setBuffer(self.y, 0, 5);
@@ -461,23 +502,15 @@ pub const Engine = struct {
                 .a_off = cfg.conv_dim + value_dim + cfg.lin_v_heads,
                 .v_off = 2 * key_dim,
                 .batch = n,
-                .ps = ps,
+                .ps = lin_ps,
                 .cs = cfg.conv_dim,
+                .write = @intFromBool(write),
             }, 6);
             if (self.gdn_sg) {
                 enc.dispatchThreads(size2(32, cfg.lin_v_heads * cfg.lin_dv), size2(32, 1));
             } else {
                 enc.dispatchThreads(size2(cfg.lin_dv, cfg.lin_v_heads), size2(32, 1));
             }
-        }
-        if (self.on(.gdn_norm)) {
-            enc.setPipeline(self.k_gnorm);
-            enc.setBuffer(self.y, 0, 0);
-            enc.setBuffer(self.weights, l.gnorm, 1);
-            enc.setBuffer(self.proj, 0, 2);
-            enc.setBuffer(self.tmp, 0, 3);
-            enc.setParams(&GnormP{ .dv = cfg.lin_dv, .hv = cfg.lin_v_heads, .z_off = cfg.conv_dim, .ps = ps, .eps = cfg.eps }, 4);
-            enc.dispatchGroups(size3(1, cfg.lin_v_heads, n), size3(cfg.lin_dv, 1, 1));
         }
     }
 
@@ -549,16 +582,21 @@ pub const Engine = struct {
         }
     }
 
-    /// LM head and greedy pick for a single-token pass: writes `tok[step + 1]`.
-    pub fn encodeHead(self: *const Engine, enc: metal.Encoder, step: u32) void {
-        self.matmul(enc, .gemv_head, self.head, self.xn, self.logits, 1);
+    /// LM head and greedy pick for the n tokens of a pass: `out[at + t]` is the successor of token t.
+    fn pick(self: *const Engine, enc: metal.Encoder, n: u32, out: metal.Buffer, at: u32) void {
+        self.matmul(enc, .gemv_head, self.head, self.xn, self.logits, 0, n);
         if (self.on(.argmax)) {
             enc.setPipeline(self.k_argmax);
             enc.setBuffer(self.logits, 0, 0);
-            enc.setBuffer(self.tok, 0, 1);
-            enc.setParams(&ArgmaxP{ .n = cfg.vocab, .step = step }, 2);
-            enc.dispatchGroups(size1(1), size1(1024));
+            enc.setBuffer(out, 0, 1);
+            enc.setParams(&ArgmaxP{ .n = cfg.vocab, .at = at }, 2);
+            enc.dispatchGroups(size2(1, n), size1(1024));
         }
+    }
+
+    /// LM head and greedy pick for a single-token pass: writes `tok[step + 1]`.
+    pub fn encodeHead(self: *const Engine, enc: metal.Encoder, step: u32) void {
+        self.pick(enc, 1, self.tok, step + 1);
     }
 
     /// Full forward pass for the token at `step`; with `head` it also picks the next token.
@@ -571,6 +609,26 @@ pub const Engine = struct {
     pub fn encodeBlock(self: *const Engine, enc: metal.Encoder, step: u32, n: u32) void {
         std.debug.assert(n <= self.max_batch);
         self.encodeEmbed(enc, step, n);
-        for (0..cfg.layers) |i| self.encodeLayer(enc, i, step, n);
+        for (0..cfg.layers) |i| self.encodeLayer(enc, i, step, n, .advance);
+    }
+
+    /// Speculative pass over `tok[step .. step + n]`, a confirmed token followed by drafts:
+    /// `pred[t]` receives the greedy successor of token t and the recurrent states stay as they
+    /// were. The KV cache needs no rollback, later passes overwrite the rejected positions. The
+    /// caller accepts a prefix of the pass and encodes `encodeCommit` for it before any other
+    /// pass. Needs the lane-split state kernel (`gdn_sg`).
+    pub fn encodeVerify(self: *const Engine, enc: metal.Encoder, step: u32, n: u32) void {
+        std.debug.assert(n <= self.max_batch and self.gdn_sg);
+        self.encodeEmbed(enc, step, n);
+        for (0..cfg.layers) |i| self.encodeLayer(enc, i, step, n, .peek);
+        self.pick(enc, n, self.pred, 0);
+    }
+
+    /// Advances the recurrent states over the first n tokens of the last `encodeVerify` pass, with
+    /// the same kernels on the same inputs, so the states are those of a pass of exactly n tokens.
+    pub fn encodeCommit(self: *const Engine, enc: metal.Encoder, n: u32) void {
+        for (&self.layers) |*l| {
+            if (l.linear) self.encodeGdn(enc, l, n, true);
+        }
     }
 };

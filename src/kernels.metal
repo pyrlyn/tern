@@ -429,8 +429,9 @@ kernel void swiglu(device const half *gu [[buffer(0)]],
 // Gated delta net (linear attention). The recurrences run over the tokens of the batch inside
 // one thread; `ps` is the per-token stride of the input projection [qkv | z | b | a].
 
-// Depthwise conv over the last 4 inputs, silu, and shift of the 3-step conv state. Grid (n).
-struct ConvP { uint n; uint batch; uint ps; };
+// Depthwise conv over the last 4 inputs, silu, and (with `write`) shift of the 3-step conv state.
+// Grid (n).
+struct ConvP { uint n; uint batch; uint ps; uint write; };
 
 kernel void gdn_conv(device const half *proj [[buffer(0)]],
                      device const half *cw [[buffer(1)]],
@@ -450,6 +451,7 @@ kernel void gdn_conv(device const half *proj [[buffer(0)]],
         s1 = s2;
         s2 = q;
     }
+    if (p.write == 0u) return;
     cs[c] = s0;
     cs[p.n + c] = s1;
     cs[2u * p.n + c] = s2;
@@ -479,7 +481,8 @@ kernel void gdn_qk_norm(device const half *conv_out [[buffer(0)]],
 }
 
 // State update and readout. Grid (dv, hv): one thread per row of the per-head state matrix.
-struct GdnP { uint hv; uint hk; uint dk; uint dv; uint b_off; uint a_off; uint v_off; uint batch; uint ps; uint cs; };
+// `write` = 0 leaves the stored state as it was (speculative pass); only gdn_step_sg honours it.
+struct GdnP { uint hv; uint hk; uint dk; uint dv; uint b_off; uint a_off; uint v_off; uint batch; uint ps; uint cs; uint write; };
 
 kernel void gdn_step(device const half *qkb [[buffer(0)]],
                      device const half *conv_out [[buffer(1)]],
@@ -537,6 +540,8 @@ kernel void gdn_step_sg(device const half *qkb [[buffer(0)]],
     uint per = p.dk >> 5;
     uint off = lane * per;
     device float *s = state + gid.y * p.dk + off;
+    float ls[8]; // this lane's part of the state row (dk <= 256)
+    for (uint i = 0; i < per; ++i) ls[i] = s[i];
     for (uint b = 0; b < p.batch; ++b) {
         device const half *proj = projb + b * p.ps;
         device const half *q = qkb + (b * 2u * p.hk + hk) * p.dk + off;
@@ -549,18 +554,20 @@ kernel void gdn_step_sg(device const half *qkb [[buffer(0)]],
         float beta = float(half(sigmoidf(float(proj[p.b_off + hv]))));
 
         float kv = 0.0f;
-        for (uint i = 0; i < per; ++i) kv += s[i] * g * float(k[i]);
+        for (uint i = 0; i < per; ++i) kv += ls[i] * g * float(k[i]);
         kv = simd_sum(kv);
         float delta = (float(conv_out[b * p.cs + p.v_off + hv * p.dv + dv]) - kv) * beta;
         float out = 0.0f;
         for (uint i = 0; i < per; ++i) {
-            float ns = s[i] * g + float(k[i]) * delta;
-            s[i] = ns;
+            float ns = ls[i] * g + float(k[i]) * delta;
+            ls[i] = ns;
             out += ns * float(q[i]);
         }
         out = simd_sum(out);
         if (lane == 0u) y[(b * p.hv + hv) * p.dv + dv] = half(out);
     }
+    if (p.write == 0u) return;
+    for (uint i = 0; i < per; ++i) s[i] = ls[i];
 }
 
 // Per-head RMSNorm of the readout, gated by silu(z). Grid (dv, hv, batch), threadgroup (dv, 1, 1).
@@ -748,14 +755,16 @@ kernel void touch_pages(device const uint *W [[buffer(0)]],
 }
 
 // ---------------------------------------------------------------------------------------------
-// Greedy sampling: tok[step + 1] = argmax(logits), lowest index on ties.
-// One threadgroup of 1024 threads.
-struct ArgmaxP { uint n; uint step; };
+// Greedy sampling: out[at + t] = argmax(logits of token t), lowest index on ties.
+// One threadgroup of 1024 threads per token, grid of threadgroups (1, tokens).
+struct ArgmaxP { uint n; uint at; };
 
-kernel void argmax(device const half *logits [[buffer(0)]],
-                   device uint *tok [[buffer(1)]],
+kernel void argmax(device const half *all_logits [[buffer(0)]],
+                   device uint *out [[buffer(1)]],
                    constant ArgmaxP &p [[buffer(2)]],
+                   uint3 tg [[threadgroup_position_in_grid]],
                    uint tid [[thread_index_in_threadgroup]]) {
+    device const half *logits = all_logits + tg.y * p.n;
     threadgroup float bv[1024];
     threadgroup uint bi[1024];
     uint per = (p.n + 1023u) >> 10;
@@ -774,5 +783,5 @@ kernel void argmax(device const half *logits [[buffer(0)]],
     for (uint j = 1; j < 1024u; ++j) {
         if (bv[j] > best) { best = bv[j]; idx = bi[j]; }
     }
-    tok[p.step + 1u] = idx;
+    out[p.at + tg.y] = idx;
 }
