@@ -34,8 +34,14 @@ the non-speculative speed on free text.
 5. Measure plain against speculative decode interleaved (medians, load given), record in
    REPORT.md.
 6. Open: a draft that works where the prompt is not repeated (document QA, free text). With
-   the measured pass prices the oracle bound of prompt lookup on doc_qa is +36%, so the goal
-   there needs a draft model. Which model, and its download, are the creator's call.
+   the measured pass prices the oracle bound of prompt lookup on doc_qa is +36%. The candidates
+   and what they need are in [RESEARCH.md](../../RESEARCH.md#draft-sources-for-ternary-bonsai-27b):
+   Qwen3.5-0.8B, the MTP head of Qwen3.5-27B, Ternary-Bonsai-2-2B. At today's pass prices a
+   draft model breaks even at 84% accepted tokens and reaches +40% at 94%, so:
+   1. measure the acceptance of Qwen3.5-0.8B against the reference tokens offline (needs the
+      creator's OK for a 0.63 GB download);
+   2. lower the price of the 4-token and 8-token pass;
+   3. then run the draft model in the engine.
 
 State: steps 1 to 5 are done. `bench/compare.py`, 3 rounds: decode against llama.cpp and MLX-LM
 +145% and +130% on code_edit, +21% and +12% on doc_qa, +19% and +19% on free_text, `matches_mlx`
