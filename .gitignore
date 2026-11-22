@@ -1,0 +1,9 @@
+.venv/
+models/
+third_party/
+build/
+zig-out/
+.zig-cache/
+*.log
+bench/results/raw/
+.DS_Store
