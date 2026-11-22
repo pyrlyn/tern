@@ -324,7 +324,7 @@ pub const Engine = struct {
     // in the buffers, token b at b * (vector length).
 
     inline fn on(self: *const Engine, part: Part) bool {
-        return self.mask >> @intFromEnum(part) & 1 != 0;
+        return self.mask >> @backingInt(part) & 1 != 0;
     }
 
     /// out[t] = m * in[t] for n tokens: the GEMV kernel for one token, the tiled kernel from

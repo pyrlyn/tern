@@ -182,7 +182,7 @@ fn profile(args: []const [:0]const u8) !void {
     const parts = std.enums.values(engine_mod.Part);
     var sum: f64 = 0;
     for (0..parts.len + 1) |i| {
-        engine.mask = if (i < parts.len) @as(u32, 1) << @intFromEnum(parts[i]) else std.math.maxInt(u32);
+        engine.mask = if (i < parts.len) @as(u32, 1) << @backingInt(parts[i]) else std.math.maxInt(u32);
         var best: f64 = std.math.inf(f64);
         var encode_s: f64 = 0;
         for (0..5) |_| {
