@@ -200,7 +200,7 @@ Accepted, each with tokens equal to MLX-LM on the three prompts:
 | Speculative decoding: prompt-lookup drafts, passes of 4, 8 and 32 tokens, states not written by the pass and replayed for the accepted tokens | Decode 20.4 / 19.0 / 19.1 tok/s (free_text / code_edit / doc_qa) | 20.8 / 41.0 / 18.8 tok/s: 0% (no pass ran), +116%, -2% | `--spec 0` against `--spec 32 --gemm-tile8 0`, 3 interleaved rounds, medians, load 54 to 151, GPU in its slow state |
 | 8-token tile for passes of 8 to 15 tokens | 20.8 / 41.0 / 18.8 tok/s with the lane GEMM for 8 tokens | 20.4 / 43.7 / 20.6 tok/s: +7% on code_edit, +10% on doc_qa; against no speculation 0% / +131% / +8% | same run |
 
-| Verification pass of 2 tokens as the first pass size (lane GEMM with 2 rows x 2 tokens per thread; sizes 2, 4, 8, 32 instead of 4, 8, 32) | doc_qa 27.2 tok/s, code_edit 63.3 tok/s; without speculation 25.1 and 28.8 | doc_qa 33.0 tok/s (+21%; +31% over no speculation), code_edit 64.2 (+1%; +123%); free_text unchanged, no pass runs | Build of `main` against this build against `--spec 0`, 3 interleaved rounds, medians, load 12 to 39 |
+| Verification pass of 2 tokens as the first pass size (lane GEMM with 2 rows x 2 tokens per thread; sizes 2, 4, 8, 32 instead of 4, 8, 32) | doc_qa 27.2 tok/s, code_edit 63.3 tok/s; without speculation 25.1 and 28.8 | doc_qa 33.0 tok/s (+21%; +31% over no speculation), code_edit 64.2 (+1%; +123%); free_text unchanged, no pass runs | Build of `main` against this build against `--spec 0`, 3 interleaved rounds, medians, load 12 to 39. Repeated against `--spec 0` on doc_qa: +10% (load 18 to 176) and +14% (5 rounds, load 9 to 14), so +31% was the high end |
 
 The lane split is below the 10% bar on the bench prompts; it is kept because its gain grows with
 the context length and the tokens are unchanged. Say so if the bar should apply to it as well:
@@ -280,19 +280,55 @@ yields at most two tokens without being full is followed by a pause.
   later run at load 18 to 176.
 - doc_qa: 22 passes produce 79 tokens: 13 from seven 2-token passes, 29 from eight 4-token
   passes, 32 from six 8-token passes. Decode +31% against no speculation and +21% against the
-  passes of 4, 8 and 32 (load 12 to 39); +10% against no speculation in the later run under
-  heavier load, where the passes cost more. A gate that knew the outcome of every pass in
-  advance would reach +58% with these drafts and the prices of the table (computed on the
-  reference tokens), so the drafts are no longer the bound here, the gate is.
+  passes of 4, 8 and 32 in the first run (load 12 to 39). That run was at the high end: a
+  later one gave +10% (load 18 to 176), and a third, 5 rounds at load 9 to 14 during which the
+  machine went from its fast to its slow state, gave per-round ratios of 1.14, 1.51, 1.06, 1.24
+  and 0.99, median +14%. The pass prices of the table predict +10%
+  (`bench/draft_accept.py`). So the 2-token pass is worth about +10 to +15% on doc_qa, not 31%.
+  A gate that knew the outcome of every pass in advance would reach +31% with these drafts.
 - free_text: the context never repeats 4 tokens, no pass runs, 0%. Starting passes at shorter
   matches loses there (table of rejected candidates).
 
-What is missing for free text, and for the rest of doc_qa, is a draft model: a small model of
-the same tokenizer that proposes tokens where the prompt does not. With the 2-token pass it
-needs far less than before: one draft token per pass, right in 25 to 30% of the cases to break
-even and in 71 to 82% for +40% (draft cost of 0.07 to 0.15 plain tokens, table in
-[RESEARCH.md](RESEARCH.md#draft-sources-for-ternary-bonsai-27b)). With passes of 4, 8 and 32 only
-it was 67 to 71% and 89 to 93%. The acceptance of the candidates is not measured yet.
+**Draft model, measured offline.** Qwen3.5-0.8B in MLX 4-bit
+(`mlx-community/Qwen3.5-0.8B-4bit`, 0.63 GB), run with mlx-lm over each prompt and the 200
+reference tokens of the 27B model in one forward pass (`bench/draft_accept.py`,
+`bench/results/draft_accept.json`). For a greedy draft the accepted runs this gives are exact.
+Same tokenizer: the rendered prompts encode to the same ids. Load 8 to 18.
+
+| | free_text | code_edit | doc_qa |
+| --- | --- | --- | --- |
+| First draft token equal to the reference | 53% | 98% | 88% |
+| The same where prompt lookup has no match | 53% | 95% | 81% |
+| Mean accepted run | 0.8 | 25.0 | 10.3 |
+
+The draft model costs 2.75 to 3.04 ms per token in mlx-lm, d = 0.10 to 0.11 plain tokens. Its
+runs turned into decode speed with the pass prices above, against plain decoding (1.00):
+
+| Draft source and gate | free_text | code_edit | doc_qa |
+| --- | --- | --- | --- |
+| Prompt lookup, ladder 2, 4, 8, 32 (today) | 1.00 | 2.39 | 1.10 |
+| Draft model, one draft token and a pass of 2 at every position | 1.22 | 1.58 | **1.49** |
+| Prompt lookup with the ladder where it matches, else draft model with a pass of 2 | **1.22** | **2.57** | 1.34 |
+| Draft model with the ladder of today | 1.01 | 2.01 | 1.24 |
+| Draft model, draft as long as the product of its probabilities stays above 0.7 | 1.06 | 2.24 | 1.39 |
+| Best possible gate over prompt lookup and draft model (oracle) | 1.36 | 3.13 | 1.88 |
+
+With d = 0.07 and 0.15 instead of the measured value, the rows move by 0.03 to 0.05 (all values
+in the JSON file). What this says:
+
+- The draft model is good enough for document QA: its 2-token passes alone give +49% over plain
+  decoding, more than prompt lookup (+10%) and more than lookup followed by the model (+34%),
+  because a wrong lookup draft in a 4-token or 8-token pass costs more than a model draft in a
+  pass of 2.
+- On free text the small model agrees with the 27B model on only 53% of the tokens. The best
+  simple gate gives +22%, the oracle +36%: free text stays below +40% over plain decoding even
+  with a perfect gate.
+- The ladder of today does not suit a draft model: it climbs to passes of 4 and 8 after two
+  accepted tokens and loses there. The gap to the oracle (1.49 against 1.88 on doc_qa) is in the
+  gate: a pass size chosen from the draft model's own confidence did not close it.
+- Not covered: the draft model inside tern (its cost there and its state after a rejected draft
+  are estimates), numerics of the batched forward pass against step-by-step decoding, more
+  prompts than these three.
 
 **Prefill.** From 35 tok/s at the start of the session to 92 to 128 tok/s depending on the state
 of the machine; under identical conditions still 25 to 31% behind llama.cpp and 13 to 21% behind
@@ -304,21 +340,19 @@ its medium to its slow state, more than llama.cpp's did.
 
 **Honest summary.** Decode against llama.cpp and MLX-LM in the fourth run: +180% and +165% on
 code edit, where the output repeats the prompt; the goal is reached there. On document QA +33%
-and +22%: the 2-token pass moved speculation there from +8% to +31% over plain decode, and the
-rest of the lead is plain decode; the goal is not reached. On free text +21% and +7%, all of it
-plain decode, since no pass runs. Under heavier load the gain on document QA shrinks (+10% over
-plain decode in one run at load 18 to 176), because passes slow down more than plain tokens. The
-missing points on document QA and all of them on free text need a draft model, whose bar is now
-one draft token right in 71 to 82% of the cases instead of 89 to 93%; whether a small model
-meets it is not measured. Prefill: 31% behind llama.cpp and 11 to 21% behind MLX-LM on the long
+and +22%: speculation with prompt lookup is worth +10 to +15% there (one run gave +31%, two
+later ones +10% and +14%), the rest of the lead is plain decode; the goal is not reached. On free
+text +21% and +7%, all of it plain decode, since no pass runs. The missing points need a draft
+model. Qwen3.5-0.8B, measured offline, is good enough for document QA (+49% over plain decoding
+in simulation with 2-token passes) and not for free text (+22%, at most +36% with a perfect
+gate). It does not run inside tern yet. Prefill: 31% behind llama.cpp and 11 to 21% behind MLX-LM on the long
 prompts. First token within 1.8 s: not reached on the long prompts.
 
 ## What was not done
 
 - A run with load below 4 ([T1](plan/T1/task.md)).
-- Speculative decoding ([T3](plan/T3/task.md)) beyond prompt lookup: no draft model, so nothing
-  is gained where the output does not repeat the prompt. The acceptance of the draft candidates
-  is not measured (it needs a model download).
+- The draft model in tern ([T3](plan/T3/task.md)): its acceptance is measured offline, the
+  engine does not run it yet, so nothing is gained on free text.
 - A cheaper 4-token or 8-token pass: every kernel variant tried was slower or inside the noise.
 - Kernels for Q8_0 and f16 ([T2](plan/T2/task.md)), fused small kernels ([T5](plan/T5/task.md)),
   the backend interface ([T6](plan/T6/task.md)).

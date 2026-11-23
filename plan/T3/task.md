@@ -2,7 +2,7 @@
 status: in progress
 priority: P0
 complexity: 5
-readiness: 70%
+readiness: 75%
 agent: Claude Code / claude-fable-5-2
 ---
 
@@ -41,9 +41,15 @@ the non-speculative speed on free text.
    [RESEARCH.md](../../RESEARCH.md#draft-sources-for-ternary-bonsai-27b): Qwen3.5-0.8B, the MTP
    head of Qwen3.5-27B, Ternary-Bonsai-2-2B. With the 2-token pass a draft model breaks even
    at 25 to 30% of first draft tokens accepted and reaches +40% at 71 to 82%, so:
-   1. measure the acceptance of Qwen3.5-0.8B against the reference tokens offline (needs the
-      creator's OK for a 0.63 GB download);
-   2. then run the draft model in the engine.
+   1. Done: acceptance of Qwen3.5-0.8B measured offline (`bench/draft_accept.py`, REPORT.md):
+      first draft token right in 53% / 98% / 88% of the positions on free text / code edit /
+      document QA. Simulated with the measured prices: one draft token in a pass of 2 where
+      lookup has no match gives 1.22 / 2.57 / 1.34 times plain decoding, the model alone 1.49
+      on document QA.
+   2. Next: run the draft model in the engine (`--draft <model>`): the model shape at run time,
+      a product kernel for 4-bit affine weights ([T2](../T2/task.md)), the draft's own state
+      kept in step with the accepted tokens, the pass-of-2 gate. Measured against the
+      simulation, interleaved.
 
 State: steps 1 to 6 are done. `bench/compare.py`, 3 rounds, with the 2-token pass: decode against
 llama.cpp and MLX-LM +180% and +165% on code_edit, +33% and +22% on doc_qa, +21% and +7% on
