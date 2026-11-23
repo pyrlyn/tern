@@ -2,7 +2,7 @@
 status: in progress
 priority: P0
 complexity: 5
-readiness: 80%
+readiness: 85%
 agent: Claude Code / claude-fable-5-2
 ---
 
@@ -51,10 +51,13 @@ the non-speculative speed on free text.
       (no rollback), lookup ladder first, else a pass of 2. Tokens unchanged, acceptance as
       offline. At load 42 to 108 no gain (-4% / -1% / 0%): the pass of 2 cost 1.7 to 2.1 plain
       tokens instead of 1.2 to 1.4 (REPORT.md).
-   3. Next: measure `--draft` on a quiet machine; decide acceptance on the GPU so that passes
-      are pipelined like plain tokens (6 to 9 ms idle per pass now).
+   3. Done: draft-model passes chained with the acceptance on the GPU (`src/chain.zig`), two
+      in flight, one near a lookup match. Tokens unchanged. The pass price did not move (no
+      idle time was left at this load; the pass of 2 is GPU-bound at 1.45 to 1.6 plain
+      tokens); `--draft` -5% / +6% / +19% against before, inside the noise (REPORT.md).
+   4. Next: measure `--draft` on a quiet machine; a pass of 2 closer to the memory bound.
 
-State: steps 1 to 6 and 7.1, 7.2 are done. `bench/compare.py`, 3 rounds, with the 2-token pass: decode against
+State: steps 1 to 6 and 7.1 to 7.3 are done. `bench/compare.py`, 3 rounds, with the 2-token pass: decode against
 llama.cpp and MLX-LM +180% and +165% on code_edit, +33% and +22% on doc_qa, +21% and +7% on
 free_text, `matches_mlx` true everywhere. The check below holds for code_edit and free_text, not
 for doc_qa.

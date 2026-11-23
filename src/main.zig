@@ -14,6 +14,7 @@ const engine_mod = @import("engine.zig");
 const draft = @import("draft.zig");
 const Engine = engine_mod.Engine;
 const DraftEngine = engine_mod.DraftEngine;
+const Chain = @import("chain.zig").Chain;
 const cfg = model.cfg;
 
 extern "c" fn clock_gettime_nsec_np(clock: c_int) u64;
@@ -154,14 +155,36 @@ fn dump(dir: []const u8, name: []const u8, bytes: []const u8) !void {
 }
 
 /// Feeds the draft model `tok[fed.* .. upto]` in passes of at most its `max_batch` tokens and
-/// advances `fed`; with `head` the last pass also writes its pick for `tok[upto]`.
-fn feedDraft(d: *const DraftEngine, enc: metal.Encoder, fed: *u32, upto: u32, head: bool) void {
+/// advances `fed`.
+fn feedDraft(d: *const DraftEngine, enc: metal.Encoder, fed: *u32, upto: u32) void {
     while (fed.* < upto) {
         const n = @min(d.max_batch, upto - fed.*);
         d.encodeBlock(enc, fed.*, n);
-        if (head and fed.* + n == upto) d.encodeHeadLast(enc, fed.*, n);
         fed.* += n;
     }
+}
+
+/// Counts the `got` tokens after `tok[done.*]` as output and advances `done` over them, up to
+/// and including an end-of-sequence token; returns whether one came.
+fn take(tok: [*]const u32, eos: []const u32, done: *u32, n_out: *u32, got: u32) bool {
+    for (0..got) |_| {
+        done.* += 1;
+        for (eos) |e| {
+            if (tok[done.*] == e) return true;
+        }
+        n_out.* += 1;
+    }
+    return false;
+}
+
+/// Chained passes to keep in flight after `tok[done]`: one while the context could reach a
+/// lookup match with the up to two tokens of the pass in flight, so that the match shows before
+/// another draft pass is queued (a long lookup pass is worth far more than a pass of two);
+/// `lookahead` otherwise.
+fn chainDepth(policy: *const draft.Policy, tok: [*]const u32, done: u32, last_step: u32, lookahead: u32) u32 {
+    const near = policy.size(last_step + 1 - done) != 0 and
+        draft.find(tok[0 .. done + 1], @max(1, policy.min_match -| 2)) != null;
+    return if (near) 1 else lookahead;
 }
 
 /// Runs one piece of the graph in its own command buffer and waits for it (debug dumps only).
@@ -281,6 +304,7 @@ pub fn main(init: std.process.Init) !void {
         drafter = try DraftEngine.initOn(engine.device, engine.lib, path, opt.draftConfig());
         drafter.?.tok = engine.tok; // the draft reads the same token ids, at the same positions
     }
+    const chain: ?Chain = if (drafter != null) try Chain.init(&engine) else null;
     const t_loaded = now();
 
     const tok = engine.tokens();
@@ -320,7 +344,7 @@ pub fn main(init: std.process.Init) !void {
             const end = step + @min(serial_chunk, left);
             while (step < end) : (step += 1) engine.encodeToken(enc, step, false);
         }
-        if (drafter) |*d| feedDraft(d, enc, &fed, step, false);
+        if (drafter) |*d| feedDraft(d, enc, &fed, step);
         enc.end();
         cb.commit();
         try cb.wait();
@@ -352,8 +376,8 @@ pub fn main(init: std.process.Init) !void {
     // With speculation, a verification pass starts whenever the context ends in something seen
     // before and no step is in flight (`hold` stops new steps once a match shows up). The pass
     // leaves the recurrent states alone; `pending` counts its accepted tokens until the next
-    // command buffer commits them. With a draft model, every other step is a pass of two: the
-    // draft model catches up on the confirmed tokens and proposes one, in the same command buffer.
+    // command buffer commits them. With a draft model, the steps without a match are chained
+    // passes of two (chain.zig), also up to `lookahead` in flight: the GPU accepts each one.
     const last_step = n_prompt + n_gen - 2;
     var ring: [max_lookahead]metal.CommandBuffer = undefined;
     var submitted: u32 = step;
@@ -384,19 +408,15 @@ pub fn main(init: std.process.Init) !void {
         if (spec and submitted == done) {
             hold = false;
             const room = last_step + 1 - done;
-            const n_lookup = policy.size(room);
-            const match = if (n_lookup != 0) draft.find(tok[0 .. done + 1], policy.min_match) else null;
-            const by_model = match == null and drafter != null and room >= 2;
-            if (match != null or by_model) {
-                const n: u32 = if (by_model) 2 else n_lookup;
-                if (match) |m| draft.fill(tok, done, m, n - 1);
+            const n = policy.size(room);
+            if (if (n != 0) draft.find(tok[0 .. done + 1], policy.min_match) else null) |m| {
+                draft.fill(tok, done, m, n - 1);
                 const pool = metal.Pool.push();
                 defer pool.pop();
                 const cb = engine.queue.commandBuffer();
                 const enc = cb.encoder();
                 if (pending != 0) engine.encodeCommit(enc, pending);
-                if (by_model) feedDraft(&drafter.?, enc, &fed, done + 1, true);
-                engine.encodeVerify(enc, done, n);
+                engine.encodeVerify(enc, .{ .cpu = done }, n);
                 enc.end();
                 const t_pass = now();
                 cb.commit();
@@ -409,26 +429,68 @@ pub fn main(init: std.process.Init) !void {
                 while (got < n and tok[done + got] == pred[got - 1]) got += 1;
                 tok[done + got] = pred[got - 1];
                 t_last = now();
-                if (by_model) {
+                policy.passed(n, got, t_last - t_pass);
+                pending = got;
+                const first = n_out == 0;
+                if (first) t_first = t_last;
+                stopped = take(tok, &opt.eos, &done, &n_out, got);
+                if (first) n_first = @max(1, n_out);
+                submitted = done;
+                continue;
+            }
+            if (drafter != null and room >= 2) {
+                // Chained passes until a lookup match, the end of the budget or of the sequence.
+                // A pass is submitted only if it ends within the budget even when every pass
+                // before it accepts two tokens.
+                const d = &drafter.?;
+                const ch = &chain.?;
+                ch.start(&engine, d, done);
+                var seq: u32 = 0;
+                var seen: u32 = 0;
+                var more = true;
+                var depth = chainDepth(&policy, tok, done, last_step, opt.lookahead);
+                var t_pass = now();
+                while (true) {
+                    while (more and seq - seen < depth and done + 2 * (seq - seen) + 2 <= last_step + 1) : (seq += 1) {
+                        const pool = metal.Pool.push();
+                        defer pool.pop();
+                        const cb = engine.queue.commandBuffer();
+                        metal.retain(cb.id);
+                        const enc = cb.encoder();
+                        if (seq == 0) {
+                            if (pending != 0) engine.encodeCommit(enc, pending);
+                            feedDraft(d, enc, &fed, done);
+                        }
+                        ch.encodePass(enc, &engine, d, seq, done + 2 * (seq - seen));
+                        enc.end();
+                        cb.commit();
+                        ring[seq % max_lookahead] = cb;
+                    }
+                    if (seen == seq) break;
+                    const cb = ring[seen % max_lookahead];
+                    try cb.wait();
+                    gpu_s += cb.gpuSeconds();
+                    metal.release(cb.id);
+                    const after = ch.after(seen);
+                    seen += 1;
+                    if (stopped) continue; // drain
+                    const got = after - done;
+                    t_last = now();
                     policy.modelPass(got);
                     by_draft.passes += 1;
                     by_draft.tokens += got;
                     by_draft.seconds += t_last - t_pass;
-                } else {
-                    policy.passed(n, got, t_last - t_pass);
+                    t_pass = t_last;
+                    pending = got;
+                    fed = after + 1 - got;
+                    const first = n_out == 0;
+                    if (first) t_first = t_last;
+                    stopped = take(tok, &opt.eos, &done, &n_out, got);
+                    if (first) n_first = @max(1, n_out);
+                    more = !stopped and (policy.size(last_step + 1 - done) == 0 or
+                        draft.find(tok[0 .. done + 1], policy.min_match) == null);
+                    depth = chainDepth(&policy, tok, done, last_step, opt.lookahead);
                 }
-                pending = got;
-                const first = n_out == 0;
-                if (first) t_first = t_last;
-                for (0..got) |_| {
-                    done += 1;
-                    for (opt.eos) |e| {
-                        if (tok[done] == e) stopped = true;
-                    }
-                    if (stopped) break;
-                    n_out += 1;
-                }
-                if (first) n_first = @max(1, n_out);
                 submitted = done;
                 continue;
             }

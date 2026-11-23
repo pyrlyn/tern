@@ -869,3 +869,48 @@ kernel void argmax(device const half *all_logits [[buffer(0)]],
     }
     out[p.at + tg.y] = idx;
 }
+
+// ---------------------------------------------------------------------------------------------
+// Chained speculation with a draft model: passes of two (the confirmed token at P and the
+// draft's pick for P + 1) that the GPU accepts on its own, so the CPU encodes the next passes
+// before it sees an outcome. ctrl = {P, got, log...}: the position of the next pass, what the
+// last pass accepted (the draft model's feed and the main model's commit of the next pass), and
+// the position after every pass, indexed by its sequence number.
+//
+// Each engine reads its position and recurrent batch from five 256-byte parameter blocks
+// (EmbedP, PrepP, ScoreP, ConvP, GdnP); chain_accept rewrites those fields for the next pass.
+struct ChainP { uint main_dyn; uint draft_dyn; uint seq; }; // block sets as offsets in uints
+
+static inline void chain_set(device uint *dyn, uint base, uint pos, uint batch) {
+    dyn[base] = pos;               // EmbedP.step
+    dyn[base + 64u + 3u] = pos;    // PrepP.pos
+    dyn[base + 128u + 3u] = pos;   // ScoreP.pos
+    dyn[base + 192u + 1u] = batch; // ConvP.batch
+    dyn[base + 256u + 7u] = batch; // GdnP.batch
+}
+
+// The draft model was fed `got` real tokens in two slots; its pick after the last one is the
+// draft for P + 1. One thread.
+kernel void chain_draft(device const uint *dpred [[buffer(0)]],
+                        device uint *tok [[buffer(1)]],
+                        device const uint *ctrl [[buffer(2)]]) {
+    tok[ctrl[0] + 1u] = dpred[ctrl[1] - 1u];
+}
+
+// pred[t] follows tok[P + t]: the draft stands if it equals pred[0], and the first prediction
+// that is not confirmed is a new token too. One thread.
+kernel void chain_accept(device const uint *pred [[buffer(0)]],
+                         device uint *tok [[buffer(1)]],
+                         device uint *ctrl [[buffer(2)]],
+                         device uint *dyn [[buffer(3)]],
+                         constant ChainP &p [[buffer(4)]]) {
+    uint P = ctrl[0];
+    uint got = pred[0] == tok[P + 1u] ? 2u : 1u;
+    tok[P + got] = pred[got - 1u];
+    P += got;
+    ctrl[0] = P;
+    ctrl[1] = got;
+    ctrl[2u + p.seq] = P;
+    chain_set(dyn, p.main_dyn, P, got);
+    chain_set(dyn, p.draft_dyn, P + 1u - got, got);
+}
