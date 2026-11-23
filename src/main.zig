@@ -46,6 +46,9 @@ const Options = struct {
     /// Draft model (`tools/convert.py` output of Qwen3.5-0.8B 4-bit): where prompt lookup has no
     /// match, it proposes one token for a pass of two.
     draft_path: ?[*:0]const u8 = null,
+    /// With a draft model: time its passes against plain tokens and run the faster of the two
+    /// (`draft.Gate`). Off, every position without a prompt match is a draft-model pass.
+    gate: bool = true,
     dump_dir: ?[]const u8 = null,
     eos: [8]u32 = @splat(std.math.maxInt(u32)),
 
@@ -88,6 +91,8 @@ const Options = struct {
                 opt.engine.attn_sg = try std.fmt.parseInt(u32, value, 10);
             } else if (std.mem.eql(u8, flag, "--draft")) {
                 opt.draft_path = value.ptr;
+            } else if (std.mem.eql(u8, flag, "--gate")) {
+                opt.gate = value[0] != '0';
             } else if (std.mem.eql(u8, flag, "--dump")) {
                 opt.dump_dir = value;
             } else usage();
@@ -141,6 +146,7 @@ fn usage() noreturn {
         \\options: --eos a,b  --lookahead k  --prefill-batch n  --dump dir
         \\         --spec n (speculative decoding: most tokens per pass, 0 = off)  --spec-min m
         \\         --draft <draft.tern> (draft model for passes of two where lookup finds nothing)
+        \\         --gate 0|1 (with --draft: run its passes only while they beat plain tokens, default 1)
         \\         --gemv <kernel> --gemv-rows n  --gemm-rows r --gemm-tokens t --gemm-tile n --gemm-tile8 n --gemm-split 1|2|4
         \\         --gdn-sg 0|1  --attn-sg 0..3 (bit 0 softmax, bit 1 value sum)
         \\
@@ -497,6 +503,7 @@ pub fn main(init: std.process.Init) !void {
     // leaves the recurrent states alone; `pending` counts its accepted tokens until the next
     // command buffer commits them. With a draft model, the steps without a match are chained
     // passes of two (chain.zig), also up to `lookahead` in flight: the GPU accepts each one.
+    // The gate times those passes against plain tokens and picks the way for the next stretch.
     const last_step = n_prompt + n_gen - 2;
     var ring: [max_lookahead]metal.CommandBuffer = undefined;
     var submitted: u32 = step;
@@ -520,6 +527,7 @@ pub fn main(init: std.process.Init) !void {
     }
     const spec = policy.count != 0;
     var by_draft = draft.Policy.Stat{};
+    var gate = draft.Gate{};
     var pending: u32 = 0;
     var hold = false;
     var stopped = false;
@@ -557,7 +565,7 @@ pub fn main(init: std.process.Init) !void {
                 submitted = done;
                 continue;
             }
-            if (drafter != null and room >= 2) {
+            if (drafter != null and room >= 2 and gate.way == .model) {
                 // Chained passes until a lookup match, the end of the budget or of the sequence.
                 // A pass is submitted only if it ends within the budget even when every pass
                 // before it accepts two tokens.
@@ -599,6 +607,7 @@ pub fn main(init: std.process.Init) !void {
                     by_draft.passes += 1;
                     by_draft.tokens += got;
                     by_draft.seconds += t_last - t_pass;
+                    if (opt.gate) gate.sample(.model, got, t_last - t_pass);
                     t_pass = t_last;
                     pending = got;
                     fed = after + 1 - got;
@@ -606,7 +615,7 @@ pub fn main(init: std.process.Init) !void {
                     if (first) t_first = t_last;
                     stopped = take(tok, &opt.eos, &done, &n_out, got);
                     if (first) n_first = @max(1, n_out);
-                    more = !stopped and (policy.size(last_step + 1 - done) == 0 or
+                    more = !stopped and gate.way == .model and (policy.size(last_step + 1 - done) == 0 or
                         draft.find(tok[0 .. done + 1], policy.min_match) == null);
                     depth = chainDepth(&policy, tok, done, last_step, opt.lookahead);
                 }
@@ -631,8 +640,10 @@ pub fn main(init: std.process.Init) !void {
         try cb.wait();
         gpu_s += cb.gpuSeconds();
         metal.release(cb.id);
+        const t_before = t_last;
         t_last = now();
         if (n_out == 0) t_first = t_last;
+        if (drafter != null and opt.gate and t_before != 0) gate.sample(.plain, 1, t_last - t_before);
         const produced = tok[done + 1];
         done += 1;
         for (opt.eos) |e| {
@@ -641,8 +652,10 @@ pub fn main(init: std.process.Init) !void {
         if (!stopped) n_out += 1;
         if (spec) {
             policy.plain();
-            hold = done <= last_step and policy.size(last_step + 1 - done) != 0 and
-                draft.find(tok[0 .. done + 1], policy.min_match) != null;
+            // No new steps once a pass is due: a prompt match, or the gate back at the draft model.
+            hold = done <= last_step and ((policy.size(last_step + 1 - done) != 0 and
+                draft.find(tok[0 .. done + 1], policy.min_match) != null) or
+                (drafter != null and gate.way == .model and last_step + 1 - done >= 2));
         }
     }
     // Drain command buffers submitted past an end-of-sequence token.
@@ -673,7 +686,15 @@ pub fn main(init: std.process.Init) !void {
         const st = policy.stats[i];
         _ = printf(if (i == 0) "{\"size\":%u,\"passes\":%u,\"tokens\":%u,\"s\":%.4f}" else ",{\"size\":%u,\"passes\":%u,\"tokens\":%u,\"s\":%.4f}", policy.sizes[i], st.passes, st.tokens, st.seconds);
     }
-    _ = printf("],\"draft\":{\"passes\":%u,\"tokens\":%u,\"s\":%.4f},\"tokens\":[", by_draft.passes, by_draft.tokens, by_draft.seconds);
+    _ = printf(
+        "],\"draft\":{\"passes\":%u,\"tokens\":%u,\"s\":%.4f},\"gate\":{\"switches\":%u,\"model_ms\":%.2f,\"plain_ms\":%.2f},\"tokens\":[",
+        by_draft.passes,
+        by_draft.tokens,
+        by_draft.seconds,
+        gate.switches,
+        gate.cost[0] * 1e3,
+        gate.cost[1] * 1e3,
+    );
     for (0..n_out) |i| _ = printf(if (i == 0) "%u" else ",%u", tok[n_prompt + i]);
     _ = printf("]}\n");
 }

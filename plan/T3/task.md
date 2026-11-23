@@ -59,10 +59,13 @@ the non-speculative speed on free text.
       --draft <draft>`): 1.50 to 1.55 plain tokens once the GPU has slowed down, the block of
       two tokens 1.33 to 1.40 of it, commit 0.04, draft model 0.10 to 0.12. Nothing inside the
       pass is worth 10%; no kernel change (REPORT.md).
-   5. Next: measure `--draft` on a quiet machine; a gate that turns the draft-model passes off
-      while their measured price is above their yield (free text under load).
+   5. Done: a gate that times the draft-model passes against plain tokens and runs the faster
+      way (`draft.Gate`, `--gate`): trials of 16 tokens, stays of 96 to 384, 5% margin. Tokens
+      unchanged. At load 5 to 18 `--draft` is 1.00 / 1.06 / 1.05 of plain decode on free_text /
+      doc_qa / code_edit with it, 0.98 / 1.04 / 1.02 without (REPORT.md).
+   6. Next: measure `--draft` on a quiet machine and under a steady heavy load.
 
-State: steps 1 to 6 and 7.1 to 7.4 are done. `bench/compare.py`, 3 rounds, with the 2-token pass: decode against
+State: steps 1 to 6 and 7.1 to 7.5 are done. `bench/compare.py`, 3 rounds, with the 2-token pass: decode against
 llama.cpp and MLX-LM +180% and +165% on code_edit, +33% and +22% on doc_qa, +21% and +7% on
 free_text, `matches_mlx` true everywhere. The check below holds for code_edit and free_text, not
 for doc_qa.

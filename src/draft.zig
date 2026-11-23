@@ -112,6 +112,141 @@ pub const Policy = struct {
     }
 };
 
+/// Whether the positions without a prompt match run as passes of two with a draft model's
+/// token or as plain tokens.
+///
+/// A pass of two costs 1.45 to 2.1 plain tokens depending on the state of the machine and
+/// yields one token plus the draft model's hit rate (REPORT.md), so which way is faster is not
+/// known ahead: the gate times both. It runs each way for `trial` tokens, stays with the faster
+/// one for `stay_first` tokens and then tries the other one again; the stay doubles every time
+/// the retrial confirms the choice. The first `settle` tokens of a stretch are not timed, the
+/// GPU's speed still follows what ran before them. The passes have to be faster by `margin`:
+/// two stretches differ by a few percent from noise alone, and every switch costs a little.
+pub const Gate = struct {
+    pub const Way = enum(u1) { model, plain };
+
+    trial: u32 = 16,
+    settle: u32 = 4,
+    stay_first: u32 = 96,
+    stay_max: u32 = 384,
+    margin: f64 = 0.05,
+
+    way: Way = .model,
+    /// Seconds per token of each way, the mean of its last stretch and the value before it;
+    /// 0 until the way has been timed.
+    cost: [2]f64 = .{ 0, 0 },
+    switches: u32 = 0,
+
+    /// Length of the stay that follows the next confirmed choice; 0 before the first choice.
+    stay: u32 = 0,
+    /// The stretch being run is a trial of the way that was not chosen.
+    trying: bool = false,
+    /// Tokens of the stretch: its length, those produced so far, those timed and their time.
+    len: u32 = 0,
+    run: u32 = 0,
+    timed: u32 = 0,
+    seconds: f64 = 0,
+
+    /// `tokens` came out one way in `seconds` of wall time. Tokens of the way the gate has
+    /// already left (still in flight when it switched) are ignored.
+    pub fn sample(self: *Gate, way: Way, tokens: u32, seconds: f64) void {
+        if (way != self.way) return;
+        if (self.len == 0) self.len = self.trial;
+        if (self.run >= self.settle) {
+            self.timed += tokens;
+            self.seconds += seconds;
+        }
+        self.run += tokens;
+        if (self.run < self.len) return;
+
+        const i = @backingInt(way);
+        if (self.timed != 0) {
+            const c = self.seconds / @as(f64, @floatFromInt(self.timed));
+            self.cost[i] = if (self.cost[i] == 0) c else (self.cost[i] + c) / 2;
+        }
+        const other: Way = @fromBackingInt(@intCast(1 - i));
+        var next = other;
+        var len = self.trial;
+        if (self.trying) {
+            // Both ways are timed: stay with the faster one.
+            const wins = if (self.cost[0] * (1 + self.margin) <= self.cost[1]) Way.model else Way.plain;
+            if (wins == way) {
+                next = way;
+                self.stay = self.stay_first;
+            } else {
+                self.stay = if (self.stay == 0) self.stay_first else @min(2 * self.stay, self.stay_max);
+            }
+            len = self.stay;
+        }
+        self.trying = !self.trying;
+        if (next != way) self.switches += 1;
+        self.way = next;
+        self.len = len;
+        self.run = 0;
+        self.timed = 0;
+        self.seconds = 0;
+    }
+};
+
+test "gate stays with the faster way and retries the other at growing intervals" {
+    var g = Gate{};
+    // A pass of two takes 0.07 s and yields 1.5 tokens, a plain token takes 0.04 s.
+    var plain_tokens: u32 = 0;
+    var model_tokens: u32 = 0;
+    var stays: [3]u32 = undefined;
+    var n_stays: u32 = 0;
+    var before = g.way;
+    var run: u32 = 0;
+    for (0..800) |k| {
+        if (g.way == .model) {
+            const got: u32 = if (k % 2 == 0) 2 else 1;
+            g.sample(.model, got, 0.07);
+            model_tokens += got;
+        } else {
+            g.sample(.plain, 1, 0.04);
+            plain_tokens += 1;
+        }
+        run += 1;
+        if (g.way != before) {
+            if (before == .plain and n_stays < stays.len) {
+                stays[n_stays] = run;
+                n_stays += 1;
+            }
+            before = g.way;
+            run = 0;
+        }
+    }
+    // Plain: the trial of 16 and a stay of 96, then stays of 192 and 384; the model gets its
+    // trials only.
+    try std.testing.expectEqualSlices(u32, &[_]u32{ 16 + 96, 192, 384 }, stays[0..n_stays]);
+    try std.testing.expect(model_tokens < 4 * 18);
+    try std.testing.expect(g.cost[0] > g.cost[1]);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.04), g.cost[1], 1e-9);
+
+    // The other way round: the model is faster, plain tokens get the trials.
+    var h = Gate{};
+    var plain_run: u32 = 0;
+    for (0..110) |_| {
+        if (h.way == .model) h.sample(.model, 2, 0.06) else {
+            h.sample(.plain, 1, 0.04);
+            plain_run += 1;
+        }
+    }
+    try std.testing.expectEqual(@as(u32, 2 * 16), plain_run);
+    try std.testing.expectEqual(Gate.Way.model, h.way);
+    // A token of the way already left changes nothing.
+    const cost = h.cost;
+    h.sample(.plain, 1, 9.0);
+    try std.testing.expectEqual(cost, h.cost);
+
+    // Passes that are 2% faster do not clear the margin.
+    var m = Gate{};
+    for (0..8) |_| m.sample(.model, 2, 0.0784);
+    for (0..16) |_| m.sample(.plain, 1, 0.04);
+    try std.testing.expectEqual(Gate.Way.plain, m.way);
+    try std.testing.expectEqual(@as(u32, 96), m.len);
+}
+
 test "find prefers the longest, then the most recent match" {
     const ctx = [_]u32{ 1, 2, 3, 9, 2, 3, 7, 1, 2, 3 };
     const m = find(&ctx, 2).?;

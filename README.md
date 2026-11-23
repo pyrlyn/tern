@@ -53,8 +53,10 @@ while its drafts are accepted.
 `--draft <draft.tern>` adds a draft model, Qwen3.5-0.8B in MLX 4-bit, for the places where the
 context repeats nothing: it proposes one token and the main model checks it in a pass of 2. The
 GPU accepts each pass and sets up the next, so two passes are in flight like plain tokens. Off
-by default; at the load measured so far it does not gain (REPORT.md). The draft file comes from
-the same converter:
+by default; at the load measured so far it gains 4 to 8% on document QA and nothing on free text
+(REPORT.md). A gate times the passes against plain tokens and runs the faster way, so the draft
+model does not slow free text down; `--gate 0` turns the gate off. The draft file comes from the
+same converter:
 
 ```sh
 .venv/bin/python tools/convert.py --src models/qwen3.5-0.8b-4bit --out models/qwen35-08b.tern
