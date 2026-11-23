@@ -47,6 +47,8 @@ verification passes of speculative decoding per pass size.
 Speculative decoding is on by default: when the end of the context repeats something seen
 earlier, the tokens that followed there are verified in one batched pass. The output is the same
 as without it; `--spec 0` turns it off, `--spec n` caps a pass at n tokens.
+A pass starts at 2 tokens, which costs little more than a plain token, and grows to 4, 8 and n
+while its drafts are accepted.
 
 | Command | Purpose |
 | --- | --- |

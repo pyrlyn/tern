@@ -33,3 +33,10 @@ Tasks are the folders next to this file. Numbers and the gap to the goals are in
   where the output repeats the prompt (code edit) and gives nothing where it does not: an oracle
   gate over the same drafts stays below +40% on document QA. The next gain there is a draft
   model, not a better gate.
+- A verification pass of 2 tokens costs about as much as one plain token (1.06 to 1.09 times by
+  GPU time): its products are still bound by reading the weights. From 4 tokens on the
+  arithmetic sets the time, and no variant of the weight unpacking tried so far made that
+  cheaper. One draft token that is right three times out of four is therefore enough for +40%.
+- The price of a pass in plain tokens depends on the state of the machine: the batched products
+  are compute-bound and slow down more under load than the memory-bound plain token (a 4-token
+  pass was 2.1 plain tokens at load 8 to 25 and 2.9 in the slow state).

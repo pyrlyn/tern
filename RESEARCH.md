@@ -127,32 +127,43 @@ so its acceptance on our model is unknown. The vendor's note for its own MTP dra
 they help on copy-heavy work and are level with plain decoding or slightly slower on general
 chat.
 
-**The price of a pass decides before the draft does.** With a draft token accepted with
-probability p, independently, a draft cost d and the measured pass prices (2.9 plain tokens for
-4 tokens, 4.0 for 8, 8.2 for 32), the best pass size gives:
+**The price of a pass decides before the draft does.** A pass of n tokens carries the last
+confirmed token and n - 1 draft tokens and yields 1 to n tokens. With a draft token accepted with
+probability p, independently, and a draft cost of d plain tokens per draft token, the gain over
+plain decoding is (1 - p^n) / (1 - p) divided by the pass price plus (n - 1) d, for the best n.
 
-| | p = 0.70 | 0.80 | 0.85 | 0.90 | 0.95 | break-even | +40% at |
+Pass prices in plain tokens, measured on the machine in its faster state (REPORT.md): 1.15 for 2
+tokens, 2.1 for 4, 3.5 for 8, 8.0 for 32. The lower two rows leave the 2-token pass out, which
+is the engine before that pass existed.
+
+| | p = 0.50 | 0.60 | 0.70 | 0.80 | 0.90 | break-even | +40% at |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| measured prices, d = 0.10 | 0% | 0% | +3% | +21% | +43% | p = 0.84 | p = 0.94 |
-| measured prices, d = 0.15 | 0% | 0% | 0% | +13% | +33% | p = 0.86 | p = 0.96 |
-| short passes at 1.2 / 1.5 / 2.2 for 2 / 4 / 8 tokens, d = 0.10 | +41% | +64% | +77% | +96% | +132% | p = 0.50 | p = 0.70 |
-| the same, d = 0.15 | +30% | +51% | +63% | +76% | +107% | p = 0.50 | p = 0.75 |
+| passes of 2, 4, 8, 32; d = 0.07 | +23% | +31% | +39% | +48% | +56% | p = 0.22 | p = 0.71 |
+| the same, d = 0.10 | +20% | +28% | +36% | +44% | +52% | p = 0.25 | p = 0.75 |
+| the same, d = 0.15 | +15% | +23% | +31% | +38% | +46% | p = 0.30 | p = 0.82 |
+| passes of 4, 8, 32 only; d = 0.10 | 0% | 0% | +6% | +23% | +43% | p = 0.67 | p = 0.89 |
+| the same, d = 0.15 | 0% | 0% | 0% | +16% | +35% | p = 0.71 | p = 0.93 |
 
-A small model does not agree with a 27B model on 94% of free-text tokens, so with today's pass
-prices no candidate can reach the goal, and below 84% it loses. The short-pass prices in the
-lower rows are an assumption: they are what a 4-token pass would cost if its matrix product ran
-at the throughput of the 32-token tile (4.3 T products per second; the lane kernel does 1.9 to
-2.2). With them prompt lookup alone would have an oracle bound of +88% on doc_qa instead of +36%.
+In every cell of the upper three rows the best pass is the 2-token one: it costs little more than
+the plain token it replaces, so one draft token that is right three times out of four is enough
+for +40%. Larger passes win only above p = 0.9. The 2-token pass is cheap because its matrix
+product is still bound by reading the weights, like the single-token product; from 4 tokens on
+the arithmetic sets the time (the unpacking of the 2-bit weights is the fixed part, see the
+rejected kernels in REPORT.md).
+
+What this does not cover: acceptance is not independent from token to token, d is an estimate,
+and a draft model that drafts one token per plain token has to keep its own state in step with
+the main model (one more draft-model token per accepted token, not counted above).
 
 Order of work that follows:
 
-1. Measure p before building anything: run the draft candidate over the prompt and the 27B
+1. Done: the price of the short pass (a 2-token pass at 1.1 to 1.3 plain tokens; kernels for a
+   cheaper 4-token and 8-token pass were tried and rejected, REPORT.md).
+2. Measure p before building anything: run the draft candidate over the prompt and the 27B
    reference tokens once (teacher forcing, in Python with mlx-lm) and count how often its
    greedy token equals the reference. The accepted run lengths are exact for a greedy draft, and
    the policy simulation turns them into a speed. Needs the 0.63 GB download of the 4-bit 0.8B
-   model.
-2. Bring the price of a 4-token and an 8-token pass down; this helps prompt lookup at once and
-   is the condition for any draft model.
+   model. The bar is p of 0.71 to 0.82 for the first draft token.
 3. Only then run the draft model inside tern (run-time model shape, the kernel for its format).
 
 ## Not measured

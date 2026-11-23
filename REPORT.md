@@ -1,6 +1,7 @@
 # Report
 
-State on 2026-11-22, after speculative decoding ([T3](plan/T3/task.md)). Machine: MacBook Pro M3 Max (16 CPU cores, 40-core GPU, 64 GB), macOS 27.0.1,
+State on 2026-11-23, after the 2-token verification pass of speculative decoding
+([T3](plan/T3/task.md)). Machine: MacBook Pro M3 Max (16 CPU cores, 40-core GPU, 64 GB), macOS 27.0.1,
 on AC power. Model: Ternary Bonsai 27B, 2-bit ternary weights, the same weights for every engine
 (MLX safetensors for MLX-LM, the PQ2_0 GGUF for llama.cpp, `.tern` converted from the MLX file).
 Greedy generation of 200 tokens after prompts of 38, 427 and 423 tokens.
@@ -116,12 +117,37 @@ Prefill is not touched by this work: the build before it and the build after it,
 code_edit, with decode at 20.4 and 19.0, 18.8 and 19.7 tok/s. The gap to the other two engines
 is the one of the first run.
 
+### Fourth run: the 2-token pass
+
+Same harness with the 2-token pass as the first pass size (`bench/results/compare_pass2.json`),
+3 rounds, medians, load at the start of the single measurements between 15.7 and 88.6. The
+machine was faster than in the third run: llama.cpp and MLX-LM decode at 22 to 25 tok/s.
+
+| Prompt | Metric | llama.cpp | MLX-LM | tern | tern vs llama.cpp | tern vs MLX-LM |
+| --- | --- | --- | --- | --- | --- | --- |
+| free_text (38 tokens) | decode, tok/s | 22.0 | 24.9 | 26.7 | +21% | +7% |
+| | prefill, tok/s | 104.1 | 77.1 | 102.4 | -2% | +33% |
+| | first token, s | 0.37 | 0.49 | 0.37 | +2% | -25% |
+| code_edit (427 tokens) | decode, tok/s | 22.3 | 23.5 | 62.3 | +180% | +165% |
+| | prefill, tok/s | 169.2 | 132.0 | 117.2 | -31% | -11% |
+| | first token, s | 2.52 | 3.23 | 3.64 | +44% | +13% |
+| doc_qa (423 tokens) | decode, tok/s | 22.6 | 24.8 | 30.2 | +33% | +22% |
+| | prefill, tok/s | 167.9 | 147.0 | 116.1 | -31% | -21% |
+| | first token, s | 2.52 | 2.88 | 3.64 | +45% | +27% |
+
+Single runs of decode, tok/s, in the order of the rounds: llama.cpp 26.0, 21.8, 22.0 on
+free_text, 25.4, 22.2, 22.3 on code_edit, 21.8, 22.6, 23.3 on doc_qa; MLX-LM 15.4, 26.1, 24.9,
+then 13.4, 23.5, 26.3, then 26.0, 24.8, 22.6; tern 25.6, 29.0, 26.6, then 64.8, 62.3, 61.9, then
+31.0, 30.2, 24.9. On doc_qa two of the three tern runs are above every run of the other two
+engines and the third (24.9) is inside their range, so the lead there is real but smaller than
++40%. On free_text no pass runs. Prefill and first token are not touched by this work.
+
 | Goal | Baseline | Ours | Difference | Reached | Where we lose |
 | --- | --- | --- | --- | --- | --- |
-| llama.cpp (Metal): decode +40% | 14.8 / 14.6 / 14.2 tok/s | 17.5 / 35.6 / 17.1 tok/s (third run) | +19% / +145% / +21% | code_edit only | Plain decode is bound by reading the weights. Speculation with prompt lookup gains where the output repeats the prompt; free text and document QA need a draft model |
-| MLX-LM: decode +40% | 14.7 / 15.5 / 15.4 tok/s | 17.5 / 35.6 / 17.1 tok/s (third run) | +19% / +130% / +12% | code_edit only | Same |
-| MLX-LM: prefill at 160 to 210 tok/s, then faster | 64.9 / 114.8 / 116.9 tok/s | 99.8 / 99.4 / 92.4 tok/s | +54% / -13% / -21% | No | Batched GEMM at 4.2 to 4.4 T products/s, tail tokens of a prompt, per-pass overhead. Nobody reached 160 tok/s in this run |
-| First token within 1.8 s | MLX-LM 0.59 / 3.72 / 3.62 s; llama.cpp 0.37 / 3.22 / 3.16 s | 0.38 / 4.29 / 4.58 s | Long prompts: 15 to 45% slower | No | Follows from prefill |
+| llama.cpp (Metal): decode +40% | 22.0 / 22.3 / 22.6 tok/s | 26.7 / 62.3 / 30.2 tok/s (fourth run) | +21% / +180% / +33% | code_edit only | Plain decode is bound by reading the weights. Speculation with prompt lookup gains where the output repeats the prompt: fully on code edit, partly on document QA. Free text needs a draft model |
+| MLX-LM: decode +40% | 24.9 / 23.5 / 24.8 tok/s | 26.7 / 62.3 / 30.2 tok/s (fourth run) | +7% / +165% / +22% | code_edit only | Same |
+| MLX-LM: prefill at 160 to 210 tok/s, then faster | 77.1 / 132.0 / 147.0 tok/s | 102.4 / 117.2 / 116.1 tok/s (fourth run) | +33% / -11% / -21% | No | Batched GEMM at 4.2 to 4.4 T products/s, tail tokens of a prompt, per-pass overhead. llama.cpp reached 168 to 169 tok/s on the long prompts in this run |
+| First token within 1.8 s | MLX-LM 0.49 / 3.23 / 2.88 s; llama.cpp 0.37 / 2.52 / 2.52 s | 0.37 / 3.64 / 3.64 s (fourth run) | Long prompts: 13 to 45% slower | No | Follows from prefill |
 | vLLM, SGLang: throughput, TTFT, p50/p99 on a server GPU | not measured | not measured | n/a | not measured | No NVIDIA GPU here; these engines do not run on a Mac |
 | MLC LLM, ExecuTorch: +40% tok/s on a phone | not measured | not measured | n/a | not measured | No phone-class device here; no estimates given |
 
@@ -174,6 +200,8 @@ Accepted, each with tokens equal to MLX-LM on the three prompts:
 | Speculative decoding: prompt-lookup drafts, passes of 4, 8 and 32 tokens, states not written by the pass and replayed for the accepted tokens | Decode 20.4 / 19.0 / 19.1 tok/s (free_text / code_edit / doc_qa) | 20.8 / 41.0 / 18.8 tok/s: 0% (no pass ran), +116%, -2% | `--spec 0` against `--spec 32 --gemm-tile8 0`, 3 interleaved rounds, medians, load 54 to 151, GPU in its slow state |
 | 8-token tile for passes of 8 to 15 tokens | 20.8 / 41.0 / 18.8 tok/s with the lane GEMM for 8 tokens | 20.4 / 43.7 / 20.6 tok/s: +7% on code_edit, +10% on doc_qa; against no speculation 0% / +131% / +8% | same run |
 
+| Verification pass of 2 tokens as the first pass size (lane GEMM with 2 rows x 2 tokens per thread; sizes 2, 4, 8, 32 instead of 4, 8, 32) | doc_qa 27.2 tok/s, code_edit 63.3 tok/s; without speculation 25.1 and 28.8 | doc_qa 33.0 tok/s (+21%; +31% over no speculation), code_edit 64.2 (+1%; +123%); free_text unchanged, no pass runs | Build of `main` against this build against `--spec 0`, 3 interleaved rounds, medians, load 12 to 39 |
+
 The lane split is below the 10% bar on the bench prompts; it is kept because its gain grows with
 the context length and the tokens are unchanged. Say so if the bar should apply to it as well:
 `--gdn-sg 0 --attn-sg 0` restores the serial kernels.
@@ -190,6 +218,15 @@ Rejected:
 | Lane split of the attention value sum together with the delta-rule split | Each alone keeps the tokens, both together flip token 110 of free_text |
 | Tiled GEMM below 16 tokens | A pass costs the same from 1 to 32 tokens (about 8 sequential tokens); the lane GEMM is cheaper up to 8 |
 | Prefill passes of 64 or 128 tokens | +5% prefill (112 against 107 tok/s, 3 interleaved rounds); below the bar, default stays 32 |
+| Lane GEMM, weights unpacked through a table of 256 entries (constant array or buffer) | 0.130 to 0.149 ms per token for one MLP matrix against 0.083: 1.5 to 1.8 times slower |
+| Lane GEMM, inputs converted to float and divided by the slot weight ahead of the product | 0.16 to 0.24 ms against 0.085: 2 to 3 times slower |
+| Lane GEMM over tables of partial sums of the inputs, one lookup per byte of weights | 0.29 ms against 0.083: 3.5 times slower, gathers from a 5 MB table |
+| Lane GEMM with weights and inputs held as half, or with the rows as the outer loop | Within the noise of 10% |
+| Unpacking with one multiply-add per weight in the lane and tile kernels; the sum of the inputs subtracted once in the GEMV | Lane -2 to -10%, 8-token tile -3%, 32-token tile 0%, GEMV -1 to -7% (`tern bench`, best of 3 interleaved), with single results of +28% and +43% on the small matrix: inside the noise, not adopted |
+| 2-token lane GEMM with 1 or 4 rows per thread | Pass of 31.6 and 30.3 ms against 28.9 to 29.7 ms with 2 rows |
+| A pass of 3 tokens | 45 to 52 ms, 1.7 to 1.9 plain tokens |
+| Pass sizes 2, 8, 32 without the size 4 | doc_qa 31.0 against 33.0 tok/s, code_edit 52.2 against 64.2 (same run as the accepted 2-token pass) |
+| Shorter prompt match before a pass starts (3, 2 or 1 tokens instead of 4) | 3: doc_qa 29.6 against 28.8 tok/s, code_edit 59.9 against 59.7, free_text 26.7 against 26.9, inside the noise. 2: code_edit 53.7. 1: code_edit 44.6, free_text 24.3 against 26.9 without speculation. 3 interleaved rounds, medians, load 18 to 176 |
 
 ## The gap to +40%
 
@@ -207,27 +244,55 @@ to survive the token check.
 
 **Speculation** is the only route to +40%. It is built for one draft source, prompt lookup:
 when the last 4 or more tokens of the context occurred earlier, the tokens that followed there
-are verified in one batched pass. The pass does not write the states of the linear layers; the
+are verified in one batched pass of 2, 4, 8 or 32 tokens. The pass does not write the states of the linear layers; the
 accepted tokens are replayed through the state kernels alone (144 small dispatches), and the KV
 cache needs nothing. The output equals plain greedy decoding on all three prompts.
 
-Price of a pass, measured inside the generation runs (slow state, a plain token at about 50 ms):
-138 to 150 ms for 4 tokens (2.8 to 3.0 plain tokens), 188 to 204 ms for 8 (3.8 to 4.1), 382 to
-443 ms for 32 (7.6 to 8.9). A pass pays off when it yields more tokens than that, so the depth
-starts at 4, moves up after a fully accepted pass, and a pass that yields at most two tokens is
-followed by a pause.
+Price of a pass. GPU time from `tern prof` at load 8 to 25, with a plain token at 26.1 to
+27.4 ms:
 
-- code_edit: 12 passes produce 175 of the 200 tokens, six of them 32-token passes with 142
-  tokens. Decode +116 to +131% against the same build without speculation.
-- doc_qa: 18 passes produce 68 tokens, 3.4 per 4-token pass and 4.4 per 8-token pass, which is
-  about their price: +8%. With these drafts and these prices even a gate that knew the outcome
-  of every pass in advance would reach +36% (computed on the reference tokens). The answer
-  paraphrases the document, so +40% here needs a better draft, not a better gate.
-- free_text: the context never repeats 4 tokens, no pass runs, 0%.
+| Tokens in the pass | 2 | 4 | 8 | 32 |
+| --- | --- | --- | --- | --- |
+| GPU time of the pass, ms | 28.9 to 29.7 | 53.6 | 88 | 203 |
+| Matrix products per token, ms | 12.0 | 11.9 | 10.0 | 5.6 |
+| Wall time inside a generation run, ms | 40 to 52 (plain token at 30 to 40) | 58 | 97 | 220 |
+| In plain tokens | 1.1 to 1.3 | 2.1 | 3.5 | 8.0 |
 
-What is missing for the other two prompts is a draft model: a small model of the same tokenizer
-that proposes tokens where the prompt does not. Its cost comes on top of the pass, so on free
-text it has to get about three of four drafts accepted to gain anything at a 4-token pass.
+The wall time adds the head, the argmax and the replay of the accepted tokens; nothing is lost
+on the CPU side. In the slow state of the machine the passes of the third run cost 2.8 to 3.0,
+3.8 to 4.1 and 7.6 to 8.9 plain tokens: the batched products are bound by arithmetic and slow
+down more than the plain token, which is bound by memory.
+
+The 2-token pass is nearly free because its products are still close to the memory bound: two
+tokens take 24 ms of matrix products against 19.7 ms for one. From 4 tokens on the unpacking of
+the 2-bit weights sets the time. In the 4-token lane kernel, leaving out the loads of the inputs
+or the unpacking alone changes nothing (0.077 and 0.086 ms per token for one matrix against
+0.083 to 0.085), leaving out both halves it (0.043 ms, 4.2 T products per second, the rate of
+the 32-token tile). The variants of the unpacking that were tried are in the table of rejected
+candidates; none was faster, so the 4-token and 8-token prices stand.
+
+A pass pays off when it yields more tokens than its price, so the depth starts at 2, moves one
+size up after a fully accepted pass, falls back to what was accepted otherwise, and a pass that
+yields at most two tokens without being full is followed by a pause.
+
+- code_edit: 14 passes produce 175 of the 200 tokens, five of them 32-token passes with 135
+  tokens. Decode +123% against the same build without speculation (load 12 to 39), +141% in a
+  later run at load 18 to 176.
+- doc_qa: 22 passes produce 79 tokens: 13 from seven 2-token passes, 29 from eight 4-token
+  passes, 32 from six 8-token passes. Decode +31% against no speculation and +21% against the
+  passes of 4, 8 and 32 (load 12 to 39); +10% against no speculation in the later run under
+  heavier load, where the passes cost more. A gate that knew the outcome of every pass in
+  advance would reach +58% with these drafts and the prices of the table (computed on the
+  reference tokens), so the drafts are no longer the bound here, the gate is.
+- free_text: the context never repeats 4 tokens, no pass runs, 0%. Starting passes at shorter
+  matches loses there (table of rejected candidates).
+
+What is missing for free text, and for the rest of doc_qa, is a draft model: a small model of
+the same tokenizer that proposes tokens where the prompt does not. With the 2-token pass it
+needs far less than before: one draft token per pass, right in 25 to 30% of the cases to break
+even and in 71 to 82% for +40% (draft cost of 0.07 to 0.15 plain tokens, table in
+[RESEARCH.md](RESEARCH.md#draft-sources-for-ternary-bonsai-27b)). With passes of 4, 8 and 32 only
+it was 67 to 71% and 89 to 93%. The acceptance of the candidates is not measured yet.
 
 **Prefill.** From 35 tok/s at the start of the session to 92 to 128 tok/s depending on the state
 of the machine; under identical conditions still 25 to 31% behind llama.cpp and 13 to 21% behind
@@ -237,20 +302,24 @@ pass (64 gives +5%, measured, not adopted yet), and the GEMM itself. One observa
 explanation yet: tern's prefill fell from about 120 to about 95 tok/s when the machine went from
 its medium to its slow state, more than llama.cpp's did.
 
-**Honest summary.** Decode: +130 to +145% over both engines on code edit, where the output
-repeats the prompt; that goal is reached there. On document QA +12 to +21% and on free text +19%,
-both in a slow state of the machine in which tern's plain decode is ahead by about that much, so
-speculation itself adds +8% and 0% there. In the fast state plain decode was level with MLX-LM,
-and that measurement has not been repeated. The 40 points on those two prompts need a draft
-model. Prefill: 2.3 times faster than the first batched kernel, still 22 to 32% behind llama.cpp
-and 5 to 28% behind MLX-LM in the third run. First token within 1.8 s: not reached on the long
-prompts.
+**Honest summary.** Decode against llama.cpp and MLX-LM in the fourth run: +180% and +165% on
+code edit, where the output repeats the prompt; the goal is reached there. On document QA +33%
+and +22%: the 2-token pass moved speculation there from +8% to +31% over plain decode, and the
+rest of the lead is plain decode; the goal is not reached. On free text +21% and +7%, all of it
+plain decode, since no pass runs. Under heavier load the gain on document QA shrinks (+10% over
+plain decode in one run at load 18 to 176), because passes slow down more than plain tokens. The
+missing points on document QA and all of them on free text need a draft model, whose bar is now
+one draft token right in 71 to 82% of the cases instead of 89 to 93%; whether a small model
+meets it is not measured. Prefill: 31% behind llama.cpp and 11 to 21% behind MLX-LM on the long
+prompts. First token within 1.8 s: not reached on the long prompts.
 
 ## What was not done
 
 - A run with load below 4 ([T1](plan/T1/task.md)).
 - Speculative decoding ([T3](plan/T3/task.md)) beyond prompt lookup: no draft model, so nothing
-  is gained where the output does not repeat the prompt.
+  is gained where the output does not repeat the prompt. The acceptance of the draft candidates
+  is not measured (it needs a model download).
+- A cheaper 4-token or 8-token pass: every kernel variant tried was slower or inside the noise.
 - Kernels for Q8_0 and f16 ([T2](plan/T2/task.md)), fused small kernels ([T5](plan/T5/task.md)),
   the backend interface ([T6](plan/T6/task.md)).
 - The time split of llama.cpp and MLX-LM themselves (Metal System Trace).
