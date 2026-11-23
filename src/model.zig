@@ -2,13 +2,14 @@
 
 const std = @import("std");
 
-/// Shape of Ternary Bonsai 27B (Qwen3.5 27B hybrid attention). The converter asserts the same
-/// quantisation; a second model shape would turn this into a value read from the file header.
+/// Shape of Ternary Bonsai 27B (Qwen3.5 27B hybrid attention): 2-bit ternary weights, one scale
+/// per 128 weights.
 pub const cfg = struct {
     pub const hidden = 5120;
     pub const inter = 17408;
     pub const layers = 64;
     pub const vocab = 248320;
+    pub const bits = 2;
     pub const group = 128;
     pub const eps: f32 = 1e-6;
 
@@ -25,6 +26,39 @@ pub const cfg = struct {
 
     pub const lin_k_heads = 16;
     pub const lin_v_heads = 48;
+    pub const lin_dk = 128;
+    pub const lin_dv = 128;
+    pub const conv_dim = 2 * lin_k_heads * lin_dk + lin_v_heads * lin_dv;
+    pub const conv_taps = 4;
+
+    pub fn isLinear(layer: usize) bool {
+        return (layer + 1) % full_interval != 0;
+    }
+};
+
+/// Shape of Qwen3.5-0.8B in MLX 4-bit, the draft model: 4-bit affine weights with a scale and a
+/// bias per 64 weights, the same architecture and tokenizer as the main model.
+pub const cfg_draft = struct {
+    pub const hidden = 1024;
+    pub const inter = 3584;
+    pub const layers = 24;
+    pub const vocab = 248320;
+    pub const bits = 4;
+    pub const group = 64;
+    pub const eps: f32 = 1e-6;
+
+    pub const full_interval = 4;
+    pub const n_full = layers / full_interval;
+    pub const n_linear = layers - n_full;
+
+    pub const heads = 8;
+    pub const kv_heads = 2;
+    pub const head_dim = 256;
+    pub const rot_dims = 64;
+    pub const rope_base: f32 = 1e7;
+
+    pub const lin_k_heads = 16;
+    pub const lin_v_heads = 16;
     pub const lin_dk = 128;
     pub const lin_dv = 128;
     pub const conv_dim = 2 * lin_k_heads * lin_dk + lin_v_heads * lin_dv;

@@ -1,6 +1,6 @@
 # Report
 
-State on 2026-11-23, after the 2-token verification pass of speculative decoding
+State on 2026-11-23, after the draft model went into the engine (`--draft`, off by default)
 ([T3](plan/T3/task.md)). Machine: MacBook Pro M3 Max (16 CPU cores, 40-core GPU, 64 GB), macOS 27.0.1,
 on AC power. Model: Ternary Bonsai 27B, 2-bit ternary weights, the same weights for every engine
 (MLX safetensors for MLX-LM, the PQ2_0 GGUF for llama.cpp, `.tern` converted from the MLX file).
@@ -226,6 +226,7 @@ Rejected:
 | 2-token lane GEMM with 1 or 4 rows per thread | Pass of 31.6 and 30.3 ms against 28.9 to 29.7 ms with 2 rows |
 | A pass of 3 tokens | 45 to 52 ms, 1.7 to 1.9 plain tokens |
 | Pass sizes 2, 8, 32 without the size 4 | doc_qa 31.0 against 33.0 tok/s, code_edit 52.2 against 64.2 (same run as the accepted 2-token pass) |
+| Draft model Qwen3.5-0.8B in tern (`--draft`): where prompt lookup has no match, a pass of 2 with one token of the draft model | Decode -4% / -1% / 0% on free_text / code_edit / doc_qa against the same build without it, prefill -8 to -18%; tokens unchanged. 3 interleaved rounds, medians, load 42 to 108. Kept as an option, off by default; details under "Draft model in tern" |
 | Shorter prompt match before a pass starts (3, 2 or 1 tokens instead of 4) | 3: doc_qa 29.6 against 28.8 tok/s, code_edit 59.9 against 59.7, free_text 26.7 against 26.9, inside the noise. 2: code_edit 53.7. 1: code_edit 44.6, free_text 24.3 against 26.9 without speculation. 3 interleaved rounds, medians, load 18 to 176 |
 
 ## The gap to +40%
@@ -330,6 +331,53 @@ in the JSON file). What this says:
   are estimates), numerics of the batched forward pass against step-by-step decoding, more
   prompts than these three.
 
+**Draft model in tern.** `--draft models/qwen35-08b.tern` runs the 0.8B model next to the 27B
+one, on the same device and in the same command buffers (`tools/convert.py` repacks it: 4-bit
+affine weights with a scale and a bias per 64, the head shares the embedding table, 0.43 GB).
+The engine is generic over the model shape; the 4-bit products have kernels of their own
+(`gemm_a4_*`: one, two or 8 tokens per thread, any batch size). The draft model reads the
+token ids of the main model and only ever sees confirmed tokens, so it needs no rollback: before
+each pass of 2 it catches up on the tokens accepted since its last step, in one batch, and its
+pick for the next token becomes the draft. Prompt lookup keeps its ladder where it matches; a
+draft-model pass counts against the pause like plain tokens. Tokens: equal to MLX-LM on all three
+prompts in every run.
+
+Acceptance inside tern is the offline one: 68 of 131 drafts on free_text (52%), 52 of 63 on
+doc_qa (83%), 11 of 12 on code_edit. Speed, interleaved against the same build without the draft
+model, 3 rounds, medians, load 42 to 108:
+
+| Prompt | Decode without / with, tok/s | Prefill without / with, tok/s | First token without / with, s |
+| --- | --- | --- | --- |
+| free_text | 21.2 / 20.4 (-4%) | 59.2 / 48.8 | 0.64 / 0.78 |
+| code_edit | 46.9 / 46.4 (-1%) | 87.3 / 80.4 | 4.89 / 5.31 |
+| doc_qa | 20.9 / 20.9 (0%) | 82.1 / 71.5 | 5.15 / 5.91 |
+
+Single runs of decode: free_text 24.9, 21.2, 17.7 without and 23.5, 20.4, 19.7 with; doc_qa
+23.3, 20.9, 17.6 and 23.7, 19.3, 20.9. No gain at this load. Where the time goes (free_text,
+load 41 to 191):
+
+- The draft model is cheap: 3.5 ms of GPU time for a token with its head, 1.3 ms per token in a
+  batch of 2 (`tern prof models/qwen35-08b.tern 200 1`), 0.07 to 0.12 plain tokens.
+- The pass of 2 of the main model is not: inside a generation run a draft-model pass took 81 to
+  100 ms of wall time and 74 to 94 ms of GPU time against 48 to 50 ms for a plain token, 1.7 to
+  2.1 plain tokens, where the simulation assumed 1.2 to 1.4. `tern prof` in the same minutes gives
+  1.1 to 1.5 plain tokens for the pass of 2 alone: in the loaded state the batched products slow
+  down more than the memory-bound single token, as noted for the third run.
+- 6 to 9 ms per pass is idle time between command buffers: a pass is not pipelined, the CPU
+  learns the outcome before it can encode the next step, while plain tokens keep two command
+  buffers queued. Under load the GPU goes to other work in that gap.
+- With 1.52 tokens per pass on free_text, a pass has to cost less than 1.5 plain tokens; it cost
+  1.7 to 2.1. On doc_qa the passes produce 1.83 tokens each and break even.
+- The draft model's prefill costs 0.9 ms per prompt token against 9.6 ms for the main model:
+  +9% on the prefill, -8 to -18% in the table above, where the load was higher in the draft runs.
+
+At the pass price of a quiet machine (1.2 to 1.3 plain tokens plus the draft) the same
+acceptance would give about +10% on free_text and +20 to +30% on doc_qa, the simulation's
+values. That is an estimate; the measurement on a quiet machine is open ([T1](plan/T1/task.md)).
+Two things would make the pass cheaper in any state: deciding the acceptance on the GPU so that
+the next step can be queued before the CPU sees the outcome, and a pass of 2 closer to the
+memory bound.
+
 **Prefill.** From 35 tok/s at the start of the session to 92 to 128 tok/s depending on the state
 of the machine; under identical conditions still 25 to 31% behind llama.cpp and 13 to 21% behind
 MLX-LM on the long prompts, and ahead of MLX-LM on the short one. Known losses: the last tokens
@@ -345,14 +393,21 @@ later ones +10% and +14%), the rest of the lead is plain decode; the goal is not
 text +21% and +7%, all of it plain decode, since no pass runs. The missing points need a draft
 model. Qwen3.5-0.8B, measured offline, is good enough for document QA (+49% over plain decoding
 in simulation with 2-token passes) and not for free text (+22%, at most +36% with a perfect
-gate). It does not run inside tern yet. Prefill: 31% behind llama.cpp and 11 to 21% behind MLX-LM on the long
+gate). It now runs inside tern (`--draft`) with unchanged tokens and the offline acceptance, but
+at the load of this session (42 to 108) it gains nothing: the pass of 2 cost 1.7 to 2.1 plain
+tokens instead of 1.2 to 1.4, mostly in the main model's pass, 6 to 9 ms of it idle time
+between command buffers. It stays off by
+default. Prefill: 31% behind llama.cpp and 11 to 21% behind MLX-LM on the long
 prompts. First token within 1.8 s: not reached on the long prompts.
 
 ## What was not done
 
 - A run with load below 4 ([T1](plan/T1/task.md)).
-- The draft model in tern ([T3](plan/T3/task.md)): its acceptance is measured offline, the
-  engine does not run it yet, so nothing is gained on free text.
+- `--draft` on a quiet machine ([T1](plan/T1/task.md)): its gain is estimated from pass prices
+  measured earlier, not measured.
+- Acceptance decided on the GPU, so that a pass can be pipelined like plain tokens
+  ([T3](plan/T3/task.md)).
+- A faster prefill of the draft model (0.9 ms per prompt token, +9% on the prefill).
 - A cheaper 4-token or 8-token pass: every kernel variant tried was slower or inside the noise.
 - Kernels for Q8_0 and f16 ([T2](plan/T2/task.md)), fused small kernels ([T5](plan/T5/task.md)),
   the backend interface ([T6](plan/T6/task.md)).
