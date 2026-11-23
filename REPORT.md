@@ -227,7 +227,7 @@ Rejected:
 | A pass of 3 tokens | 45 to 52 ms, 1.7 to 1.9 plain tokens |
 | Pass sizes 2, 8, 32 without the size 4 | doc_qa 31.0 against 33.0 tok/s, code_edit 52.2 against 64.2 (same run as the accepted 2-token pass) |
 | Draft model Qwen3.5-0.8B in tern (`--draft`): where prompt lookup has no match, a pass of 2 with one token of the draft model | Decode -4% / -1% / 0% on free_text / code_edit / doc_qa against the same build without it, prefill -8 to -18%; tokens unchanged. 3 interleaved rounds, medians, load 42 to 108. Kept as an option, off by default; details under "Draft model in tern" |
-| Chained draft-model passes: acceptance and the next pass's position on the GPU, two passes in flight; one in flight while the context is two tokens from a lookup match | Pass of 2: 64.5 to 76.5 ms against 65.7 to 72.3 ms before, GPU time equal to wall time in both. Decode against `--draft` before: -5% / +6% / +19% on free_text / code_edit / doc_qa, single runs scattered by up to 20%. 3 interleaved rounds, medians, load 22 to 135. Tokens unchanged. Kept: it does not lose and needs no CPU readback; details under "Draft model in tern" |
+| Chained draft-model passes: acceptance and the next pass's position on the GPU, two passes in flight; one in flight while the context is two tokens from a lookup match | Pass of 2: 64.5 to 76.5 ms against 65.7 to 72.3 ms before, GPU time equal to wall time in both. Decode against `--draft` before: -5% / +6% / +19% on free_text / code_edit / doc_qa, single runs scattered by up to 20%. 3 interleaved rounds, medians, load 22 to 135; at load 7 to 15 -8% / +7% / +6%. Tokens unchanged. Kept: it does not lose and needs no CPU readback; details under "Draft model in tern" |
 | Shorter prompt match before a pass starts (3, 2 or 1 tokens instead of 4) | 3: doc_qa 29.6 against 28.8 tok/s, code_edit 59.9 against 59.7, free_text 26.7 against 26.9, inside the noise. 2: code_edit 53.7. 1: code_edit 44.6, free_text 24.3 against 26.9 without speculation. 3 interleaved rounds, medians, load 18 to 176 |
 
 ## The gap to +40%
@@ -408,7 +408,11 @@ Decode, 3 interleaved rounds, medians, load 22 to 115:
 | code_edit | 36.2 | 39.6 | 36.9 | 42.1 |
 | doc_qa | 20.9 | 19.7 | 21.5 | 23.4 |
 
-Single runs scatter by up to 20% at this load, so only the direction holds: chaining does not
+The same three builds at load 7 to 15, 3 interleaved rounds, medians (plain / `--draft` before /
+chained adaptive): free_text 23.4 / 26.4 / 24.4, code_edit 55.4 / 52.0 / 55.8, doc_qa 24.8 /
+25.2 / 26.7 tok/s; the chained passes cost 55 to 56 ms there.
+
+Single runs scatter by up to 20% at either load, so only the direction holds: chaining does not
 lose, and the gains on code_edit and doc_qa are within reach of the noise. What is left for the
 pass of 2 is its GPU work, a pass closer to the memory bound.
 
