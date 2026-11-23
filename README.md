@@ -1,4 +1,4 @@
-# tern
+<h1><picture><source media="(prefers-color-scheme: dark)" srcset="brand/logo-dark.svg"><img src="brand/logo.svg" width="32" height="32" alt="" align="absmiddle"></picture> tern</h1>
 
 Inference runtime for ternary LLMs on Apple Silicon, written in Zig, with Metal compute kernels.
 It runs Ternary Bonsai 27B (Qwen3.5 27B hybrid: 48 gated-delta-net layers, 16 full-attention
