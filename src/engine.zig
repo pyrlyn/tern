@@ -65,6 +65,23 @@ pub const a4_batch = 8;
 /// the state after its last token, `peek` leaves the stored state alone (speculative pass).
 pub const State = enum { advance, peek };
 
+/// Parameter blocks a pass reads from GPU memory instead of the command stream, so that an
+/// earlier pass on the GPU can set its position and recurrent batch (chained speculation). One
+/// engine's set is `dyn_blocks` blocks of `dyn_block` bytes at `off`, in this order: EmbedP,
+/// PrepP, ScoreP, ConvP, GdnP. `bound` is at least the position; it sizes the attention grid.
+pub const Dyn = struct { buf: metal.Buffer, off: usize, bound: u32 };
+pub const dyn_block = 256;
+pub const dyn_blocks = 5;
+
+/// Where a pass sits: a position the CPU knows, or one held in GPU memory.
+pub const At = union(enum) { cpu: u32, gpu: Dyn };
+
+// kernels.metal (chain_set) rewrites these fields in place.
+comptime {
+    std.debug.assert(@offsetOf(EmbedP, "step") == 0 and @offsetOf(PrepP, "pos") == 12 and @offsetOf(ScoreP, "pos") == 12);
+    std.debug.assert(@offsetOf(ConvP, "batch") == 4 and @offsetOf(GdnP, "batch") == 28);
+}
+
 /// Kernel classes of one token, for the per-class time breakdown (`tern prof`).
 pub const Part = enum(u5) {
     embed,
@@ -205,6 +222,8 @@ pub fn EngineOf(comptime cfg: type) type {
         part: metal.Buffer,
         gdn_sg: bool,
         attn_sg: u32,
+        /// Per-token length of a full-attention layer's projection: [q, gate per head | k | v].
+        attn_ps: u32,
 
         layers: [cfg.layers]Layer,
         embed_w: usize,
@@ -347,6 +366,8 @@ pub fn EngineOf(comptime cfg: type) type {
                     l.qn = (try file.findFmt("L{d}.qn", .{i})).offset;
                     l.kn = (try file.findFmt("L{d}.kn", .{i})).offset;
                     l.kv = n_full * 2 * kvBytes(max_ctx);
+                    if (n_full == 0) self.attn_ps = l.in.rows;
+                    if (l.in.rows != self.attn_ps) return error.UnexpectedProjectionSize;
                     n_full += 1;
                 }
             }
@@ -383,15 +404,10 @@ pub fn EngineOf(comptime cfg: type) type {
         /// `gemm_tile` tokens up, the lane kernel in between (n must then be 2 or a multiple of
         /// `gemm_tokens`). The result goes to `out` at byte offset `out_off`.
         pub inline fn matmul(self: *const Self, enc: metal.Encoder, part: Part, m: Mat, in: metal.Buffer, out: metal.Buffer, out_off: usize, n: u32) void {
-            self.matmulAt(enc, part, m, in, 0, out, out_off, n);
-        }
-
-        /// `matmul` reading its input from byte offset `in_off`.
-        inline fn matmulAt(self: *const Self, enc: metal.Encoder, part: Part, m: Mat, in: metal.Buffer, in_off: usize, out: metal.Buffer, out_off: usize, n: u32) void {
             if (!self.on(part)) return;
             enc.setBuffer(self.weights, m.w, 0);
             enc.setBuffer(self.weights, m.s, 1);
-            enc.setBuffer(in, in_off, 2);
+            enc.setBuffer(in, 0, 2);
             enc.setBuffer(out, out_off, 3);
             if (cfg.bits == 4) {
                 // Any n up to `max_batch`: 4 rows per thread for one or two tokens, 2 rows and
@@ -463,6 +479,10 @@ pub fn EngineOf(comptime cfg: type) type {
 
         /// Embeddings of `tok[step .. step + n]` and the first layer's input norm.
         pub fn encodeEmbed(self: *const Self, enc: metal.Encoder, step: u32, n: u32) void {
+            self.embedAt(enc, .{ .cpu = step }, n);
+        }
+
+        fn embedAt(self: *const Self, enc: metal.Encoder, at: At, n: u32) void {
             if (self.on(.embed)) {
                 enc.setPipeline(self.k_embed);
                 enc.setBuffer(self.weights, self.embed_w, 0);
@@ -470,10 +490,90 @@ pub fn EngineOf(comptime cfg: type) type {
                 enc.setBuffer(self.weights, self.embed_b, 2);
                 enc.setBuffer(self.tok, 0, 3);
                 enc.setBuffer(self.x, 0, 4);
-                enc.setParams(&EmbedP{ .step = step, .cols = cfg.hidden, .groups = cfg.hidden / cfg.group }, 5);
+                bind(enc, at, &self.embedP(cpuPos(at)), 0, 5);
                 enc.dispatchThreads(size2(cfg.hidden, n), size2(256, 1));
             }
             self.norm(enc, self.layers[0].n1, false, n);
+        }
+
+        // Parameter blocks that depend on the position or on the recurrent batch.
+        fn embedP(_: *const Self, step: u32) EmbedP {
+            return .{ .step = step, .cols = cfg.hidden, .groups = cfg.hidden / cfg.group };
+        }
+
+        fn prepP(self: *const Self, pos: u32) PrepP {
+            return .{
+                .nh = cfg.heads,
+                .nkv = cfg.kv_heads,
+                .hd = cfg.head_dim,
+                .pos = pos,
+                .rot = cfg.rot_dims,
+                .ps = self.attn_ps,
+                .eps = cfg.eps,
+                .log_base = @log(cfg.rope_base),
+            };
+        }
+
+        fn scoreP(self: *const Self, pos: u32) ScoreP {
+            return .{
+                .nh = cfg.heads,
+                .nkv = cfg.kv_heads,
+                .hd = cfg.head_dim,
+                .pos = pos,
+                .stride = self.max_ctx,
+                .ps = self.attn_ps,
+                .scale = 1.0 / @sqrt(@as(f32, cfg.head_dim)),
+            };
+        }
+
+        fn convP(_: *const Self, n: u32, write: bool) ConvP {
+            return .{ .n = cfg.conv_dim, .batch = n, .ps = lin_ps, .write = @intFromBool(write) };
+        }
+
+        fn gdnP(_: *const Self, n: u32, write: bool) GdnP {
+            const key_dim = cfg.lin_k_heads * cfg.lin_dk;
+            const value_dim = cfg.lin_v_heads * cfg.lin_dv;
+            return .{
+                .hv = cfg.lin_v_heads,
+                .hk = cfg.lin_k_heads,
+                .dk = cfg.lin_dk,
+                .dv = cfg.lin_dv,
+                .b_off = cfg.conv_dim + value_dim,
+                .a_off = cfg.conv_dim + value_dim + cfg.lin_v_heads,
+                .v_off = 2 * key_dim,
+                .batch = n,
+                .ps = lin_ps,
+                .cs = cfg.conv_dim,
+                .write = @intFromBool(write),
+            };
+        }
+
+        /// Fills this engine's set of GPU-held parameter blocks at byte offset `off` of `buf` for
+        /// a pass at `pos` whose recurrent layers advance over `batch` tokens. Nothing that reads
+        /// them may be in flight.
+        pub fn dynInit(self: *const Self, buf: metal.Buffer, off: usize, pos: u32, batch: u32) void {
+            const base = buf.contents() + off;
+            @as(*EmbedP, @ptrCast(@alignCast(base))).* = self.embedP(pos);
+            @as(*PrepP, @ptrCast(@alignCast(base + dyn_block))).* = self.prepP(pos);
+            @as(*ScoreP, @ptrCast(@alignCast(base + 2 * dyn_block))).* = self.scoreP(pos);
+            @as(*ConvP, @ptrCast(@alignCast(base + 3 * dyn_block))).* = self.convP(batch, true);
+            @as(*GdnP, @ptrCast(@alignCast(base + 4 * dyn_block))).* = self.gdnP(batch, true);
+        }
+
+        fn cpuPos(at: At) u32 {
+            return switch (at) {
+                .cpu => |pos| pos,
+                .gpu => 0,
+            };
+        }
+
+        /// Binds parameter block `block`: from the command stream for a CPU-known position, from
+        /// GPU memory otherwise.
+        inline fn bind(enc: metal.Encoder, at: At, params: anytype, block: usize, index: usize) void {
+            switch (at) {
+                .cpu => enc.setParams(params, index),
+                .gpu => |d| enc.setBuffer(d.buf, d.off + block * dyn_block, index),
+            }
         }
 
         /// The largest batch of at most n tokens that one pass can carry (0 when n is too small).
@@ -488,10 +588,17 @@ pub fn EngineOf(comptime cfg: type) type {
         /// One decoder layer for n tokens at positions pos .. pos + n. Leaves the layer output in `x`
         /// and the next layer's normalised input in `xn`.
         pub fn encodeLayer(self: *const Self, enc: metal.Encoder, i: usize, pos: u32, n: u32, state: State) void {
+            self.layerAt(enc, i, .{ .cpu = pos }, n, state);
+        }
+
+        /// `encodeLayer` at `at`; with a GPU-held position an `advance` pass also takes the
+        /// recurrent batch from GPU memory.
+        fn layerAt(self: *const Self, enc: metal.Encoder, i: usize, at: At, n: u32, state: State) void {
             const l = &self.layers[i];
             if (l.linear) {
                 self.matmul(enc, .gemv_in, l.in, self.xn, self.lin_proj, l.proj, n);
-                self.encodeGdn(enc, l, n, state == .advance);
+                const dyn: ?Dyn = if (state == .advance and at == .gpu) at.gpu else null;
+                self.encodeGdn(enc, l, n, state == .advance, dyn);
                 if (self.on(.gdn_norm)) {
                     enc.setPipeline(self.k_gnorm);
                     enc.setBuffer(self.y, 0, 0);
@@ -503,7 +610,7 @@ pub fn EngineOf(comptime cfg: type) type {
                 }
             } else {
                 self.matmul(enc, .gemv_in, l.in, self.xn, self.proj, 0, n);
-                self.encodeFullAttn(enc, l, pos, n);
+                self.encodeFullAttn(enc, l, at, n);
             }
             self.matmul(enc, .gemv_out, l.out, self.tmp, self.r, 0, n);
             self.norm(enc, l.n2, true, n);
@@ -522,18 +629,17 @@ pub fn EngineOf(comptime cfg: type) type {
 
         /// Gated delta net of one linear layer over the first n tokens of its slot in `lin_proj`:
         /// conv, q/k norm, and the state recurrence with its readout in `y`. With `write` the conv
-        /// and delta-rule states are stored as they are after token n - 1.
-        fn encodeGdn(self: *const Self, enc: metal.Encoder, l: *const Layer, n: u32, write: bool) void {
-            const key_dim = cfg.lin_k_heads * cfg.lin_dk;
-            const value_dim = cfg.lin_v_heads * cfg.lin_dv;
-
+        /// and delta-rule states are stored as they are after token n - 1. With `dyn` the states
+        /// advance over the GPU-held batch (at most n) instead.
+        fn encodeGdn(self: *const Self, enc: metal.Encoder, l: *const Layer, n: u32, write: bool, dyn: ?Dyn) void {
+            const at: At = if (dyn) |d| .{ .gpu = d } else .{ .cpu = 0 };
             if (self.on(.gdn_conv)) {
                 enc.setPipeline(self.k_conv);
                 enc.setBuffer(self.lin_proj, l.proj, 0);
                 enc.setBuffer(self.weights, l.conv, 1);
                 enc.setBuffer(self.state, l.state, 2);
                 enc.setBuffer(self.conv_out, 0, 3);
-                enc.setParams(&ConvP{ .n = cfg.conv_dim, .batch = n, .ps = lin_ps, .write = @intFromBool(write) }, 4);
+                bind(enc, at, &self.convP(n, write), 3, 4);
                 enc.dispatchThreads(size1(cfg.conv_dim), size1(256));
             }
             if (self.on(.gdn_qk)) {
@@ -551,19 +657,7 @@ pub fn EngineOf(comptime cfg: type) type {
                 enc.setBuffer(self.weights, l.adt, 3);
                 enc.setBuffer(self.state, l.state + conv_state_bytes, 4);
                 enc.setBuffer(self.y, 0, 5);
-                enc.setParams(&GdnP{
-                    .hv = cfg.lin_v_heads,
-                    .hk = cfg.lin_k_heads,
-                    .dk = cfg.lin_dk,
-                    .dv = cfg.lin_dv,
-                    .b_off = cfg.conv_dim + value_dim,
-                    .a_off = cfg.conv_dim + value_dim + cfg.lin_v_heads,
-                    .v_off = 2 * key_dim,
-                    .batch = n,
-                    .ps = lin_ps,
-                    .cs = cfg.conv_dim,
-                    .write = @intFromBool(write),
-                }, 6);
+                bind(enc, at, &self.gdnP(n, write), 4, 6);
                 if (self.gdn_sg) {
                     enc.dispatchThreads(size2(32, cfg.lin_v_heads * cfg.lin_dv), size2(32, 1));
                 } else {
@@ -572,10 +666,15 @@ pub fn EngineOf(comptime cfg: type) type {
             }
         }
 
-        fn encodeFullAttn(self: *const Self, enc: metal.Encoder, l: *const Layer, pos: u32, n: u32) void {
+        fn encodeFullAttn(self: *const Self, enc: metal.Encoder, l: *const Layer, at: At, n: u32) void {
             const k_off = l.kv;
             const v_off = l.kv + kvBytes(self.max_ctx);
-            const ps = l.in.rows; // proj = [q, gate per head | k | v] per token
+            const pos = cpuPos(at);
+            // Threads past the position return at once, so a bound is enough for the grid.
+            const reach = switch (at) {
+                .cpu => |p| p,
+                .gpu => |d| d.bound,
+            } + n;
 
             if (self.on(.attn_prep)) {
                 enc.setPipeline(self.k_prep);
@@ -585,40 +684,23 @@ pub fn EngineOf(comptime cfg: type) type {
                 enc.setBuffer(self.qrot, 0, 3);
                 enc.setBuffer(self.kv, k_off, 4);
                 enc.setBuffer(self.kv, v_off, 5);
-                enc.setParams(&PrepP{
-                    .nh = cfg.heads,
-                    .nkv = cfg.kv_heads,
-                    .hd = cfg.head_dim,
-                    .pos = pos,
-                    .rot = cfg.rot_dims,
-                    .ps = ps,
-                    .eps = cfg.eps,
-                    .log_base = @log(cfg.rope_base),
-                }, 6);
+                bind(enc, at, &self.prepP(pos), 1, 6);
                 enc.dispatchGroups(size3(1, cfg.heads + 2 * cfg.kv_heads, n), size3(cfg.head_dim, 1, 1));
             }
 
-            const sp = ScoreP{
-                .nh = cfg.heads,
-                .nkv = cfg.kv_heads,
-                .hd = cfg.head_dim,
-                .pos = pos,
-                .stride = self.max_ctx,
-                .ps = ps,
-                .scale = 1.0 / @sqrt(@as(f32, cfg.head_dim)),
-            };
+            const sp = self.scoreP(pos);
             if (self.on(.attn_scores)) {
                 enc.setPipeline(self.k_scores);
                 enc.setBuffer(self.qrot, 0, 0);
                 enc.setBuffer(self.kv, k_off, 1);
                 enc.setBuffer(self.scores, 0, 2);
-                enc.setParams(&sp, 3);
-                enc.dispatchThreads(size3(pos + n, cfg.heads, n), size3(32, 1, 1));
+                bind(enc, at, &sp, 2, 3);
+                enc.dispatchThreads(size3(reach, cfg.heads, n), size3(32, 1, 1));
             }
             if (self.on(.attn_softmax)) {
                 enc.setPipeline(self.k_softmax);
                 enc.setBuffer(self.scores, 0, 0);
-                enc.setParams(&sp, 1);
+                bind(enc, at, &sp, 2, 1);
                 if (self.attn_sg & 1 != 0) {
                     enc.dispatchThreads(size3(32, cfg.heads, n), size3(32, 1, 1));
                 } else {
@@ -631,7 +713,7 @@ pub fn EngineOf(comptime cfg: type) type {
                 enc.setBuffer(self.kv, v_off, 1);
                 enc.setBuffer(self.proj, 0, 2);
                 enc.setBuffer(self.tmp, 0, 3);
-                enc.setParams(&sp, 4);
+                bind(enc, at, &sp, 2, 4);
                 if (self.attn_sg & 2 != 0) {
                     enc.dispatchThreads(size3(32, cfg.heads * cfg.head_dim, n), size3(32, 1, 1));
                 } else {
@@ -642,12 +724,7 @@ pub fn EngineOf(comptime cfg: type) type {
 
         /// LM head and greedy pick for the n tokens of a pass: `out[at + t]` is the successor of token t.
         fn pick(self: *const Self, enc: metal.Encoder, n: u32, out: metal.Buffer, at: u32) void {
-            self.pickFrom(enc, 0, n, out, at);
-        }
-
-        /// `pick` for n tokens starting with token `first` of the last pass.
-        fn pickFrom(self: *const Self, enc: metal.Encoder, first: u32, n: u32, out: metal.Buffer, at: u32) void {
-            self.matmulAt(enc, .gemv_head, self.head, self.xn, @as(usize, first) * cfg.hidden * 2, self.logits, 0, n);
+            self.matmul(enc, .gemv_head, self.head, self.xn, self.logits, 0, n);
             if (self.on(.argmax)) {
                 enc.setPipeline(self.k_argmax);
                 enc.setBuffer(self.logits, 0, 0);
@@ -660,12 +737,6 @@ pub fn EngineOf(comptime cfg: type) type {
         /// LM head and greedy pick for a single-token pass: writes `tok[step + 1]`.
         pub fn encodeHead(self: *const Self, enc: metal.Encoder, step: u32) void {
             self.pick(enc, 1, self.tok, step + 1);
-        }
-
-        /// LM head and greedy pick for the last token of a pass over `tok[step .. step + n]`: writes
-        /// `tok[step + n]`.
-        pub fn encodeHeadLast(self: *const Self, enc: metal.Encoder, step: u32, n: u32) void {
-            self.pickFrom(enc, n - 1, 1, self.tok, step + n);
         }
 
         /// Full forward pass for the token at `step`; with `head` it also picks the next token.
@@ -686,10 +757,10 @@ pub fn EngineOf(comptime cfg: type) type {
         /// were. The KV cache needs no rollback, later passes overwrite the rejected positions. The
         /// caller accepts a prefix of the pass and encodes `encodeCommit` for it before any other
         /// pass. Needs the lane-split state kernel (`gdn_sg`).
-        pub fn encodeVerify(self: *const Self, enc: metal.Encoder, step: u32, n: u32) void {
+        pub fn encodeVerify(self: *const Self, enc: metal.Encoder, at: At, n: u32) void {
             std.debug.assert(n <= self.max_batch and self.gdn_sg);
-            self.encodeEmbed(enc, step, n);
-            for (0..cfg.layers) |i| self.encodeLayer(enc, i, step, n, .peek);
+            self.embedAt(enc, at, n);
+            for (0..cfg.layers) |i| self.layerAt(enc, i, at, n, .peek);
             self.pick(enc, n, self.pred, 0);
         }
 
@@ -697,8 +768,25 @@ pub fn EngineOf(comptime cfg: type) type {
         /// the same kernels on the same inputs, so the states are those of a pass of exactly n tokens.
         pub fn encodeCommit(self: *const Self, enc: metal.Encoder, n: u32) void {
             for (&self.layers) |*l| {
-                if (l.linear) self.encodeGdn(enc, l, n, true);
+                if (l.linear) self.encodeGdn(enc, l, n, true, null);
             }
+        }
+
+        /// `encodeCommit` for the GPU-held batch (at most `n`).
+        pub fn encodeCommitAt(self: *const Self, enc: metal.Encoder, d: Dyn, n: u32) void {
+            for (&self.layers) |*l| {
+                if (l.linear) self.encodeGdn(enc, l, n, true, d);
+            }
+        }
+
+        /// Forward pass over the n tokens at the GPU-held position, with the head over all of
+        /// them: `pred[t]` is the pick after token t. The recurrent states advance over the
+        /// GPU-held batch only, so the tokens past it may be anything (draft model of a chain).
+        pub fn encodeFeedAt(self: *const Self, enc: metal.Encoder, d: Dyn, n: u32) void {
+            std.debug.assert(n <= self.max_batch and self.gdn_sg);
+            self.embedAt(enc, .{ .gpu = d }, n);
+            for (0..cfg.layers) |i| self.layerAt(enc, i, .{ .gpu = d }, n, .advance);
+            self.pick(enc, n, self.pred, 0);
         }
     };
 }

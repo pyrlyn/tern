@@ -45,6 +45,7 @@ Tasks are the folders next to this file. Numbers and the gap to the goals are in
   gate for it is one draft token in a pass of 2, not the ladder of prompt lookup. Free text
   stays below +40% over plain decoding with this draft even under an oracle gate (+36%).
 - Inside tern the 0.8B draft costs 0.07 to 0.12 plain tokens and keeps its offline acceptance,
-  but a pass of 2 is not pipelined: under load it cost 1.7 to 2.1 plain tokens (6 to 9 ms of it
-  idle between command buffers) and the draft model gained nothing. Its value depends on the
-  pass price, so on the state of the machine.
+  but under load a pass of 2 cost 1.7 to 2.1 plain tokens and the draft model gained nothing.
+  Chaining the passes with the acceptance on the GPU removed the CPU readback but not the price:
+  the pass is GPU-bound at 1.45 to 1.6 plain tokens. Its value depends on that price, so on the
+  state of the machine and on a cheaper pass of 2.

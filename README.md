@@ -51,7 +51,8 @@ A pass starts at 2 tokens, which costs little more than a plain token, and grows
 while its drafts are accepted.
 
 `--draft <draft.tern>` adds a draft model, Qwen3.5-0.8B in MLX 4-bit, for the places where the
-context repeats nothing: it proposes one token and the main model checks it in a pass of 2. Off
+context repeats nothing: it proposes one token and the main model checks it in a pass of 2. The
+GPU accepts each pass and sets up the next, so two passes are in flight like plain tokens. Off
 by default; at the load measured so far it does not gain (REPORT.md). The draft file comes from
 the same converter:
 
@@ -92,6 +93,7 @@ that reads the PQ2_0 GGUF), built in `third_party/llama.cpp-prism`, with the GGU
 | `src/metal.zig` | Metal bindings through `objc_msgSend` |
 | `src/model.zig` | Shapes of the main and the draft model, the `.tern` reader |
 | `src/draft.zig` | Prompt lookup and the depth policy of speculative decoding |
+| `src/chain.zig` | Draft-model passes chained on the GPU: acceptance and the next pass's position |
 | `src/main.zig` | The command line |
 | `tools/convert.py` | MLX safetensors (2-bit main model, 4-bit draft model) to `.tern` |
 | `bench/` | Prompts, rendered token ids, bench scripts, results |

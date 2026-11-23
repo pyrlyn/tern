@@ -1,7 +1,7 @@
 # Report
 
-State on 2026-11-23, after the draft model went into the engine (`--draft`, off by default)
-([T3](plan/T3/task.md)). Machine: MacBook Pro M3 Max (16 CPU cores, 40-core GPU, 64 GB), macOS 27.0.1,
+State on 2026-11-23, after the draft model went into the engine (`--draft`, off by default) and
+its passes were chained with the acceptance on the GPU ([T3](plan/T3/task.md)). Machine: MacBook Pro M3 Max (16 CPU cores, 40-core GPU, 64 GB), macOS 27.0.1,
 on AC power. Model: Ternary Bonsai 27B, 2-bit ternary weights, the same weights for every engine
 (MLX safetensors for MLX-LM, the PQ2_0 GGUF for llama.cpp, `.tern` converted from the MLX file).
 Greedy generation of 200 tokens after prompts of 38, 427 and 423 tokens.
@@ -227,6 +227,7 @@ Rejected:
 | A pass of 3 tokens | 45 to 52 ms, 1.7 to 1.9 plain tokens |
 | Pass sizes 2, 8, 32 without the size 4 | doc_qa 31.0 against 33.0 tok/s, code_edit 52.2 against 64.2 (same run as the accepted 2-token pass) |
 | Draft model Qwen3.5-0.8B in tern (`--draft`): where prompt lookup has no match, a pass of 2 with one token of the draft model | Decode -4% / -1% / 0% on free_text / code_edit / doc_qa against the same build without it, prefill -8 to -18%; tokens unchanged. 3 interleaved rounds, medians, load 42 to 108. Kept as an option, off by default; details under "Draft model in tern" |
+| Chained draft-model passes: acceptance and the next pass's position on the GPU, two passes in flight; one in flight while the context is two tokens from a lookup match | Pass of 2: 64.5 to 76.5 ms against 65.7 to 72.3 ms before, GPU time equal to wall time in both. Decode against `--draft` before: -5% / +6% / +19% on free_text / code_edit / doc_qa, single runs scattered by up to 20%. 3 interleaved rounds, medians, load 22 to 135. Tokens unchanged. Kept: it does not lose and needs no CPU readback; details under "Draft model in tern" |
 | Shorter prompt match before a pass starts (3, 2 or 1 tokens instead of 4) | 3: doc_qa 29.6 against 28.8 tok/s, code_edit 59.9 against 59.7, free_text 26.7 against 26.9, inside the noise. 2: code_edit 53.7. 1: code_edit 44.6, free_text 24.3 against 26.9 without speculation. 3 interleaved rounds, medians, load 18 to 176 |
 
 ## The gap to +40%
@@ -374,9 +375,42 @@ load 41 to 191):
 At the pass price of a quiet machine (1.2 to 1.3 plain tokens plus the draft) the same
 acceptance would give about +10% on free_text and +20 to +30% on doc_qa, the simulation's
 values. That is an estimate; the measurement on a quiet machine is open ([T1](plan/T1/task.md)).
-Two things would make the pass cheaper in any state: deciding the acceptance on the GPU so that
-the next step can be queued before the CPU sees the outcome, and a pass of 2 closer to the
-memory bound.
+
+**Chained passes** (`src/chain.zig`). The GPU now accepts a draft-model pass itself and writes
+the position and counts of the next one into parameter blocks that the next pass reads from GPU
+memory, so the CPU keeps two passes in flight as it does for plain tokens. One pass: commit of the
+previous pass's tokens, the draft model fed them in two fixed slots, its pick as the draft, the
+main model's pass of 2, a one-thread accept kernel. Tokens: equal to MLX-LM on all three prompts
+in every run.
+
+It did not make the pass cheaper. Per-pass wall time on free_text, interleaved, load 36 to 135:
+
+| Run | Plain token, ms | Pass before, ms | Chained pass, ms |
+| --- | --- | --- | --- |
+| 1 | 42.4 | 65.7 | 65.0 |
+| 2 | 45.5 | 66.5 | 64.5 |
+| 3 | 47.4 | 72.3 | 76.5 |
+
+In these runs the unchained pass had no idle time either: GPU time was within 1 to 3% of wall
+time, unlike the 6 to 9 ms measured in the earlier runs. The pass of 2 costs 1.45 to 1.6 plain
+tokens of GPU work and yields 1.52 tokens on free_text, so the draft model breaks even there.
+
+Keeping two passes in flight has one cost: when the context enters a repeated span, the pass
+already queued is a draft-model pass where a prompt-lookup pass of up to 32 tokens should run (16
+ms per token on code_edit against about 33 ms for a pass of 2). With two passes in flight always,
+code_edit fell to 36.9 tok/s against 39.6 before. The chain therefore keeps one pass in flight
+while the last two tokens of the context occur earlier, a step before a lookup match can show.
+Decode, 3 interleaved rounds, medians, load 22 to 115:
+
+| Prompt | Plain | `--draft` before | Chained, two in flight | Chained, adaptive |
+| --- | --- | --- | --- | --- |
+| free_text | 19.8 | 18.7 | 19.0 | 17.7 |
+| code_edit | 36.2 | 39.6 | 36.9 | 42.1 |
+| doc_qa | 20.9 | 19.7 | 21.5 | 23.4 |
+
+Single runs scatter by up to 20% at this load, so only the direction holds: chaining does not
+lose, and the gains on code_edit and doc_qa are within reach of the noise. What is left for the
+pass of 2 is its GPU work, a pass closer to the memory bound.
 
 **Prefill.** From 35 tok/s at the start of the session to 92 to 128 tok/s depending on the state
 of the machine; under identical conditions still 25 to 31% behind llama.cpp and 13 to 21% behind
@@ -395,9 +429,10 @@ model. Qwen3.5-0.8B, measured offline, is good enough for document QA (+49% over
 in simulation with 2-token passes) and not for free text (+22%, at most +36% with a perfect
 gate). It now runs inside tern (`--draft`) with unchanged tokens and the offline acceptance, but
 at the load of this session (42 to 108) it gains nothing: the pass of 2 cost 1.7 to 2.1 plain
-tokens instead of 1.2 to 1.4, mostly in the main model's pass, 6 to 9 ms of it idle time
-between command buffers. It stays off by
-default. Prefill: 31% behind llama.cpp and 11 to 21% behind MLX-LM on the long
+tokens instead of 1.2 to 1.4, mostly in the main model's pass. Chaining the passes with the
+acceptance on the GPU did not lower that price (1.45 to 1.6 plain tokens, GPU-bound, no idle
+time left) and moved `--draft` to -5% / +6% / +19% against its earlier version, inside the noise
+of load 22 to 135. It stays off by default. Prefill: 31% behind llama.cpp and 11 to 21% behind MLX-LM on the long
 prompts. First token within 1.8 s: not reached on the long prompts.
 
 ## What was not done
@@ -405,8 +440,8 @@ prompts. First token within 1.8 s: not reached on the long prompts.
 - A run with load below 4 ([T1](plan/T1/task.md)).
 - `--draft` on a quiet machine ([T1](plan/T1/task.md)): its gain is estimated from pass prices
   measured earlier, not measured.
-- Acceptance decided on the GPU, so that a pass can be pipelined like plain tokens
-  ([T3](plan/T3/task.md)).
+- A pass of 2 closer to the memory bound: it costs 1.45 to 1.6 plain tokens of GPU work, the
+  draft model needs 1.2 to 1.3 to gain on free text ([T3](plan/T3/task.md)).
 - A faster prefill of the draft model (0.9 ms per prompt token, +9% on the prefill).
 - A cheaper 4-token or 8-token pass: every kernel variant tried was slower or inside the noise.
 - Kernels for Q8_0 and f16 ([T2](plan/T2/task.md)), fused small kernels ([T5](plan/T5/task.md)),
