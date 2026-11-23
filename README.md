@@ -64,6 +64,7 @@ the same converter:
 | --- | --- |
 | `tern gen <model> <ids> <n>` | Greedy generation with timings |
 | `tern prof <model> <position> <batch>` | GPU time per token for every kernel class, best of 5 (main or draft model) |
+| `tern prof <model> <ids> 2 --draft <draft>` | GPU time of the pieces of a chained pass of two after a real prompt, in plain tokens |
 | `tern bench <model> <matrix> <iters> <batch>` | One matrix product: ms per token, weights per second, checksum |
 
 Options are listed by `tern` without arguments.

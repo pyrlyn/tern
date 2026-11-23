@@ -1,7 +1,8 @@
 //! tern command line.
 //!
 //!   tern gen   <model.tern> <ids-file> <n-gen> [options]   greedy generation, one JSON line
-//!   tern prof  <model.tern> <position> [batch] [options]   GPU time of one token per kernel class
+//!   tern prof  <model.tern> <position> <batch> [options]   GPU time of one token per kernel class
+//!   tern prof  <model.tern> <ids-file> 2 --draft <draft.tern>   pieces of a chained pass of two
 //!   tern bench <model.tern> <matrix> [iters] [batch] [options]   one matrix product in isolation
 //!
 //! Tokenisation stays outside for now: the benchmark harness renders the prompt once and feeds
@@ -135,6 +136,7 @@ fn usage() noreturn {
     std.debug.print(
         \\usage: tern gen   <model.tern> <ids-file> <n-gen> [options]
         \\       tern prof  <model.tern> <position> <batch> [options]
+        \\       tern prof  <model.tern> <ids-file> 2 --draft <draft.tern>   (pieces of a pass of two)
         \\       tern bench <model.tern> <matrix> <iters> <batch> [options]
         \\options: --eos a,b  --lookahead k  --prefill-batch n  --dump dir
         \\         --spec n (speculative decoding: most tokens per pass, 0 = off)  --spec-min m
@@ -162,6 +164,40 @@ fn feedDraft(d: *const DraftEngine, enc: metal.Encoder, fed: *u32, upto: u32) vo
         d.encodeBlock(enc, fed.*, n);
         fed.* += n;
     }
+}
+
+/// Prefill: every prompt token but the last, no head. Batches first (any size with the tiled
+/// kernel, multiples of `gemm_tokens` with the lane kernel), then the tail token by token. The
+/// draft model, if any, is fed in the same command buffers. Returns the GPU seconds.
+fn prefill(engine: *const Engine, drafter: ?*const DraftEngine, batch: u32, n_prompt: u32, step: *u32, fed: *u32) !f64 {
+    const bt = engine.gemm_tokens;
+    var gpu_s: f64 = 0;
+    while (step.* + 1 < n_prompt) {
+        const pool = metal.Pool.push();
+        defer pool.pop();
+        const cb = engine.queue.commandBuffer();
+        const enc = cb.encoder();
+        const left = n_prompt - 1 - step.*;
+        const tile = engine.gemm_tile;
+        if (tile != 0 and @min(batch, left) >= tile) {
+            const n = @min(batch, left);
+            engine.encodeBlock(enc, step.*, n);
+            step.* += n;
+        } else if (batch >= bt and left >= bt) {
+            const n = @min(engine.max_batch, left) / bt * bt;
+            engine.encodeBlock(enc, step.*, n);
+            step.* += n;
+        } else {
+            const end = step.* + @min(serial_chunk, left);
+            while (step.* < end) : (step.* += 1) engine.encodeToken(enc, step.*, false);
+        }
+        if (drafter) |d| feedDraft(d, enc, fed, step.*);
+        enc.end();
+        cb.commit();
+        try cb.wait();
+        gpu_s += cb.gpuSeconds();
+    }
+    return gpu_s;
 }
 
 /// Counts the `got` tokens after `tok[done.*]` as output and advances `done` over them, up to
@@ -241,19 +277,118 @@ fn benchMatmul(args: []const [:0]const u8) !void {
 
 /// tern prof <model.tern> <position> <batch> [options]
 /// GPU time per token of each kernel class at the given context position: each class runs alone
-/// (best of 5 command buffers), then all together. Kernel times do not depend on the data.
-/// Takes the main model or the draft model.
+/// (best of 5 command buffers), then the matrix products together, the rest together, and all
+/// together. Kernel times do not depend on the data. Takes the main model or the draft model.
+/// With `--draft` it profiles a chained pass of two instead (`profilePass`).
 fn profile(args: []const [:0]const u8) !void {
     const n = try std.fmt.parseInt(u32, args[4], 10);
     var opt = try Options.parse(args, 5);
-    opt.engine.max_batch = @max(n, opt.engine.gemm_tokens);
+    if (opt.draft_path == null) opt.engine.max_batch = @max(n, opt.engine.gemm_tokens);
     const engine = Engine.init(args[2].ptr, opt.engine) catch |err| {
         if (err != error.ModelShapeMismatch) return err;
         var dc = opt.draftConfig();
         dc.max_batch = (@max(n, 1) + engine_mod.a4_batch - 1) / engine_mod.a4_batch * engine_mod.a4_batch;
         return profileWith(DraftEngine, try DraftEngine.init(args[2].ptr, dc), args, n);
     };
+    if (opt.draft_path) |path| {
+        if (n != 2) usage();
+        return profilePass(engine, path, opt, args[3]);
+    }
     return profileWith(Engine, engine, args, n);
+}
+
+/// `tern prof <model.tern> <ids-file> 2 --draft <draft.tern>`: GPU time of the pieces of a
+/// chained pass of two after a real prompt, against a plain token. Both models prefill the
+/// prompt and every piece starts from the same recurrent states. The GPU runs a piece faster
+/// after a rest or after light pieces, so each one follows the same warm-up without a gap and
+/// the order changes every round. Command buffers of 3; best and median of 15 rounds.
+///
+/// Pieces: `plain` one token with the head; `block` two tokens, states advanced, no head;
+/// `verify` two tokens with the head, states left alone; `commit` the state replay for two
+/// tokens; `draft` the draft model's part of a pass; `draft1` one draft-model token with the
+/// head; `pass` the whole chained pass; `pass_nc` the same without the commit.
+fn profilePass(engine_in: Engine, path: [*:0]const u8, opt: Options, ids_path: [:0]const u8) !void {
+    var engine = engine_in;
+    var d = try DraftEngine.initOn(engine.device, engine.lib, path, opt.draftConfig());
+    d.tok = engine.tok;
+    const ch = try Chain.init(&engine);
+
+    var text: [1 << 16]u8 = undefined;
+    const ids_file = fopen(ids_path.ptr, "rb") orelse return error.IdsOpenFailed;
+    const text_len = fread(&text, 1, text.len, ids_file);
+    _ = fclose(ids_file);
+    const tok = engine.tokens();
+    const reps = 3;
+    const n_prompt: u32 = @intCast(parseIds(text[0..text_len], tok[0 .. opt.engine.max_ctx - 2 * reps - 2]));
+    if (n_prompt == 0) return error.EmptyPrompt;
+    var pos: u32 = 0;
+    var fed: u32 = 0;
+    _ = try prefill(&engine, &d, opt.prefill_batch, n_prompt, &pos, &fed);
+
+    // Saved recurrent states after the prompt; the KV cache past it is overwritten anyway.
+    const main_saved = try engine.device.buffer(Engine.state_len);
+    const draft_saved = try engine.device.buffer(DraftEngine.state_len);
+    @memcpy(main_saved.contents()[0..Engine.state_len], engine.state.contents()[0..Engine.state_len]);
+    @memcpy(draft_saved.contents()[0..DraftEngine.state_len], d.state.contents()[0..DraftEngine.state_len]);
+
+    const Piece = enum { plain, block, verify, commit, draft, draft1, pass, pass_nc };
+    const pieces = std.enums.values(Piece);
+    const rounds = 15;
+    var times: [pieces.len][rounds]f64 = undefined;
+    var order: [pieces.len]usize = undefined;
+    for (&order, 0..) |*o, k| o.* = k;
+    var seed: u32 = 12345;
+    for (0..rounds) |round| {
+        // A new order every round: a piece runs faster after light ones than after heavy ones.
+        for (0..pieces.len - 1) |k| {
+            seed = seed *% 1664525 +% 1013904223;
+            std.mem.swap(usize, &order[k], &order[k + (seed >> 8) % (pieces.len - k)]);
+        }
+        for (order) |i| {
+            const piece = pieces[i];
+            @memcpy(engine.state.contents()[0..Engine.state_len], main_saved.contents()[0..Engine.state_len]);
+            @memcpy(d.state.contents()[0..DraftEngine.state_len], draft_saved.contents()[0..DraftEngine.state_len]);
+            ch.start(&engine, &d, pos);
+            const pool = metal.Pool.push();
+            defer pool.pop();
+            // The same load ahead of every piece, with no gap: two passes that leave the
+            // recurrent states alone, in a command buffer of their own.
+            engine.mask = std.math.maxInt(u32);
+            const warm = engine.queue.commandBuffer();
+            const warm_enc = warm.encoder();
+            for (0..2) |_| engine.encodeVerify(warm_enc, .{ .cpu = pos }, 2);
+            warm_enc.end();
+            warm.commit();
+            const cb = engine.queue.commandBuffer();
+            const enc = cb.encoder();
+            // The draft-only pass runs the chain with the main model's kernels masked off.
+            engine.mask = if (piece == .draft) 0 else std.math.maxInt(u32);
+            for (0..reps) |r| {
+                const at: u32 = @intCast(r);
+                switch (piece) {
+                    .plain => engine.encodeToken(enc, pos + at, true),
+                    .block => engine.encodeBlock(enc, pos + 2 * at, 2),
+                    .verify => engine.encodeVerify(enc, .{ .cpu = pos + 2 * at }, 2),
+                    .commit => engine.encodeCommit(enc, 2),
+                    .draft1 => d.encodeToken(enc, pos + at, true),
+                    .draft, .pass => ch.encodePass(enc, &engine, &d, at + 1, pos + 2 * at),
+                    // Sequence number 0 leaves the commit out.
+                    .pass_nc => ch.encodePass(enc, &engine, &d, 0, pos + 2 * at),
+                }
+            }
+            enc.end();
+            cb.commit();
+            try cb.wait();
+            times[i][round] = cb.gpuSeconds() / reps;
+        }
+    }
+    _ = printf("prompt %u tokens, pass at %u; GPU ms, best and median of %u rounds, in plain tokens\n", n_prompt, pos, @as(u32, rounds));
+    for (&times) |*t| std.mem.sort(f64, t, {}, std.sort.asc(f64));
+    for (pieces, times) |piece, t| {
+        const best = t[0];
+        const med = t[rounds / 2];
+        _ = printf("%-7s %8.3f %8.3f  %5.2f %5.2f\n", @tagName(piece).ptr, best * 1e3, med * 1e3, best / times[0][0], med / times[0][rounds / 2]);
+    }
 }
 
 fn profileWith(comptime E: type, engine_in: E, args: []const [:0]const u8, n: u32) !void {
@@ -263,8 +398,14 @@ fn profileWith(comptime E: type, engine_in: E, args: []const [:0]const u8, n: u3
     const per_token = 1.0 / @as(f64, @floatFromInt(reps * n));
     const parts = std.enums.values(engine_mod.Part);
     var sum: f64 = 0;
-    for (0..parts.len + 1) |i| {
-        engine.mask = if (i < parts.len) @as(u32, 1) << @backingInt(parts[i]) else std.math.maxInt(u32);
+    var gemms: u32 = 0;
+    for ([_]engine_mod.Part{ .gemv_in, .gemv_out, .gemv_mlp, .gemv_down, .gemv_head }) |p| gemms |= @as(u32, 1) << @backingInt(p);
+    for (0..parts.len + 3) |i| {
+        engine.mask = if (i < parts.len) @as(u32, 1) << @backingInt(parts[i]) else switch (i - parts.len) {
+            0 => gemms,
+            1 => ~gemms,
+            else => std.math.maxInt(u32),
+        };
         var best: f64 = std.math.inf(f64);
         var encode_s: f64 = 0;
         for (0..5) |_| {
@@ -284,7 +425,12 @@ fn profileWith(comptime E: type, engine_in: E, args: []const [:0]const u8, n: u3
             best = @min(best, cb.gpuSeconds() * per_token);
         }
         if (i < parts.len) sum += best;
-        _ = printf("%-13s %8.3f ms gpu  %6.3f ms encode\n", if (i < parts.len) @tagName(parts[i]).ptr else "token", best * 1e3, encode_s * per_token * 1e3);
+        const name: [*:0]const u8 = if (i < parts.len) @tagName(parts[i]).ptr else switch (i - parts.len) {
+            0 => "products",
+            1 => "the rest",
+            else => "token",
+        };
+        _ = printf("%-13s %8.3f ms gpu  %6.3f ms encode\n", name, best * 1e3, encode_s * per_token * 1e3);
     }
     _ = printf("%-13s %8.3f ms gpu\n", "sum of parts", sum * 1e3);
 }
@@ -319,37 +465,10 @@ pub fn main(init: std.process.Init) !void {
     const t0 = now();
     var gpu_s: f64 = 0;
 
-    // Prefill: every prompt token but the last, no head. Batches first (any size with the tiled
-    // kernel, multiples of `gemm_tokens` with the lane kernel), then the tail token by token.
-    const bt = engine.gemm_tokens;
     var step: u32 = 0;
     // Prompt tokens the draft model has seen; it runs in the main model's command buffers.
     var fed: u32 = 0;
-    while (step + 1 < n_prompt) {
-        const pool = metal.Pool.push();
-        defer pool.pop();
-        const cb = engine.queue.commandBuffer();
-        const enc = cb.encoder();
-        const left = n_prompt - 1 - step;
-        const tile = engine.gemm_tile;
-        if (tile != 0 and @min(opt.prefill_batch, left) >= tile) {
-            const n = @min(opt.prefill_batch, left);
-            engine.encodeBlock(enc, step, n);
-            step += n;
-        } else if (opt.prefill_batch >= bt and left >= bt) {
-            const n = @min(engine.max_batch, left) / bt * bt;
-            engine.encodeBlock(enc, step, n);
-            step += n;
-        } else {
-            const end = step + @min(serial_chunk, left);
-            while (step < end) : (step += 1) engine.encodeToken(enc, step, false);
-        }
-        if (drafter) |*d| feedDraft(d, enc, &fed, step);
-        enc.end();
-        cb.commit();
-        try cb.wait();
-        gpu_s += cb.gpuSeconds();
-    }
+    gpu_s += try prefill(&engine, if (drafter) |*d| d else null, opt.prefill_batch, n_prompt, &step, &fed);
     const t_prefilled = now();
 
     if (opt.dump_dir) |dir| {

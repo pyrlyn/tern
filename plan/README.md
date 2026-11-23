@@ -48,4 +48,10 @@ Tasks are the folders next to this file. Numbers and the gap to the goals are in
   but under load a pass of 2 cost 1.7 to 2.1 plain tokens and the draft model gained nothing.
   Chaining the passes with the acceptance on the GPU removed the CPU readback but not the price:
   the pass is GPU-bound at 1.45 to 1.6 plain tokens. Its value depends on that price, so on the
-  state of the machine and on a cheaper pass of 2.
+  state of the machine.
+- The pass of 2 has no cheap part left: profiled by piece on a real prompt it is 1.50 to 1.55
+  plain tokens once the GPU has slowed down, and the block of two tokens itself is 1.33 to 1.40
+  (1.16 to 1.29 on a rested GPU). Commit and draft model are worth 3% each at most.
+- GPU timings depend on what ran just before: a plain token takes 28 to 30 ms after a pause and
+  48 to 52 ms right after two passes. Pieces are comparable only after the same warm-up and in
+  a shuffled order (`tern prof --draft` does both).

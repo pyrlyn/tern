@@ -55,9 +55,14 @@ the non-speculative speed on free text.
       in flight, one near a lookup match. Tokens unchanged. The pass price did not move (no
       idle time was left at this load; the pass of 2 is GPU-bound at 1.45 to 1.6 plain
       tokens); `--draft` -5% / +6% / +19% against before, inside the noise (REPORT.md).
-   4. Next: measure `--draft` on a quiet machine; a pass of 2 closer to the memory bound.
+   4. Done: the pass of 2 profiled by piece on real prompts (`tern prof <model> <ids> 2
+      --draft <draft>`): 1.50 to 1.55 plain tokens once the GPU has slowed down, the block of
+      two tokens 1.33 to 1.40 of it, commit 0.04, draft model 0.10 to 0.12. Nothing inside the
+      pass is worth 10%; no kernel change (REPORT.md).
+   5. Next: measure `--draft` on a quiet machine; a gate that turns the draft-model passes off
+      while their measured price is above their yield (free text under load).
 
-State: steps 1 to 6 and 7.1 to 7.3 are done. `bench/compare.py`, 3 rounds, with the 2-token pass: decode against
+State: steps 1 to 6 and 7.1 to 7.4 are done. `bench/compare.py`, 3 rounds, with the 2-token pass: decode against
 llama.cpp and MLX-LM +180% and +165% on code_edit, +33% and +22% on doc_qa, +21% and +7% on
 free_text, `matches_mlx` true everywhere. The check below holds for code_edit and free_text, not
 for doc_qa.
