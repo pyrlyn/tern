@@ -5,6 +5,19 @@ Inference runtime for ternary LLMs on Apple Silicon, written in Zig.
 
 Tasks are the folders next to this file. Numbers and the gap to the goals are in
 [REPORT.md](../REPORT.md), the technique survey in [RESEARCH.md](../RESEARCH.md).
+The cross-platform product plan, per-platform baselines and the **`>= 2x`**
+speed bar are in [docs/cross-platform-plan.md](../docs/cross-platform-plan.md)
+(T7 macOS, T8 Linux, T9 Windows). The compile-time backend interface (T6) is
+specified in a separate PR, [pyrlyn/tern#8](https://github.com/pyrlyn/tern/pull/8).
+
+## Speed bar
+
+On macOS, Linux and Windows, tern must be **`>= 2x`** as fast as that
+platform's fastest realistic baseline on every harness benchmark (decode,
+prefill, TTFT) and every prompt, with greedy tokens unchanged. Details,
+baseline research and the PR-only workflow are in the document above. The
+older +40% wording in README.md and REPORT.md is superseded for new work.
+
 
 ## Decisions
 
@@ -17,6 +30,12 @@ Tasks are the folders next to this file. Numbers and the gap to the goals are in
   where MLX rounds. Changing the order of a sum is allowed only after the token check.
 - A candidate is kept only with a before/after measurement; rejected ones are listed in the
   report with their numbers.
+
+- Speed bar for new work: **`>= 2x`** the fastest baseline on each of macOS,
+  Linux and Windows, on every harness metric and prompt (see
+  [docs/cross-platform-plan.md](../docs/cross-platform-plan.md)).
+- All changes go through pull requests. Merge only on an explicit request, and
+  only with green CI.
 
 ## Findings
 
