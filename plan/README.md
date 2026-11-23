@@ -44,3 +44,7 @@ Tasks are the folders next to this file. Numbers and the gap to the goals are in
   27B reference on 53% of free-text positions, 88% on document QA, 98% on code edit. The right
   gate for it is one draft token in a pass of 2, not the ladder of prompt lookup. Free text
   stays below +40% over plain decoding with this draft even under an oracle gate (+36%).
+- Inside tern the 0.8B draft costs 0.07 to 0.12 plain tokens and keeps its offline acceptance,
+  but a pass of 2 is not pipelined: under load it cost 1.7 to 2.1 plain tokens (6 to 9 ms of it
+  idle between command buffers) and the draft model gained nothing. Its value depends on the
+  pass price, so on the state of the machine.

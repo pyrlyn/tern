@@ -50,10 +50,19 @@ as without it; `--spec 0` turns it off, `--spec n` caps a pass at n tokens.
 A pass starts at 2 tokens, which costs little more than a plain token, and grows to 4, 8 and n
 while its drafts are accepted.
 
+`--draft <draft.tern>` adds a draft model, Qwen3.5-0.8B in MLX 4-bit, for the places where the
+context repeats nothing: it proposes one token and the main model checks it in a pass of 2. Off
+by default; at the load measured so far it does not gain (REPORT.md). The draft file comes from
+the same converter:
+
+```sh
+.venv/bin/python tools/convert.py --src models/qwen3.5-0.8b-4bit --out models/qwen35-08b.tern
+```
+
 | Command | Purpose |
 | --- | --- |
 | `tern gen <model> <ids> <n>` | Greedy generation with timings |
-| `tern prof <model> <position> <batch>` | GPU time per token for every kernel class, best of 5 |
+| `tern prof <model> <position> <batch>` | GPU time per token for every kernel class, best of 5 (main or draft model) |
 | `tern bench <model> <matrix> <iters> <batch>` | One matrix product: ms per token, weights per second, checksum |
 
 Options are listed by `tern` without arguments.
@@ -79,12 +88,12 @@ that reads the PQ2_0 GGUF), built in `third_party/llama.cpp-prism`, with the GGU
 | Path | Holds |
 | --- | --- |
 | `src/kernels.metal` | Every compute kernel, compiled at start |
-| `src/engine.zig` | Buffers, pipelines and the encoding of a token or a batch of tokens |
+| `src/engine.zig` | Buffers, pipelines and the encoding of a token or a batch of tokens, generic over the model shape |
 | `src/metal.zig` | Metal bindings through `objc_msgSend` |
-| `src/model.zig` | Model constants and the `.tern` reader |
-| `src/draft.zig` | Draft source (prompt lookup) and depth policy of speculative decoding |
+| `src/model.zig` | Shapes of the main and the draft model, the `.tern` reader |
+| `src/draft.zig` | Prompt lookup and the depth policy of speculative decoding |
 | `src/main.zig` | The command line |
-| `tools/convert.py` | MLX safetensors to `.tern` |
+| `tools/convert.py` | MLX safetensors (2-bit main model, 4-bit draft model) to `.tern` |
 | `bench/` | Prompts, rendered token ids, bench scripts, results |
 
 ## Design

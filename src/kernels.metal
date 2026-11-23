@@ -1,4 +1,4 @@
-// Metal kernels for single-token decode of the Qwen3.5 hybrid architecture with ternary weights.
+// Metal kernels for the Qwen3.5 hybrid architecture: the ternary main model and a 4-bit draft.
 //
 // Activations are stored as half and every kernel computes in float, rounding to half at the
 // points where the MLX reference does, so that greedy decoding picks the same tokens.
@@ -33,6 +33,23 @@ kernel void embed(device const uint *W [[buffer(0)]],
     uint word = W[t * (p.cols >> 4) + (i >> 4)];
     float q = float((word >> ((i & 15u) * 2u)) & 3u);
     uint g = t * p.groups + (i >> 7);
+    x[gid.y * p.cols + i] = half(float(S[g]) * q + float(B[g]));
+}
+
+// The same for a 4-bit table with a scale and a bias per 64 values.
+kernel void embed_a4(device const uint *W [[buffer(0)]],
+                     device const half *S [[buffer(1)]],
+                     device const half *B [[buffer(2)]],
+                     device const uint *tok [[buffer(3)]],
+                     device half *x [[buffer(4)]],
+                     constant EmbedP &p [[buffer(5)]],
+                     uint2 gid [[thread_position_in_grid]]) {
+    uint i = gid.x;
+    if (i >= p.cols) return;
+    uint t = tok[p.step + gid.y];
+    uint word = W[t * (p.cols >> 3) + (i >> 3)];
+    float q = float((word >> ((i & 7u) * 4u)) & 15u);
+    uint g = t * p.groups + (i >> 6);
     x[gid.y * p.cols + i] = half(float(S[g]) * q + float(B[g]));
 }
 
@@ -221,6 +238,68 @@ GEMM_T2(gemm_t2_r1b4, 1, 4)
 GEMM_T2(gemm_t2_r2b4, 2, 4)
 GEMM_T2(gemm_t2_r2b8, 2, 8)
 GEMM_T2(gemm_t2_r4b4, 4, 4)
+
+// 4-bit affine products (the draft model): 8 slots per word, a scale and a bias per 64 weights
+// (8 words):  y[r] = sum_g s[r,g] * sum_i q[r,i] * x[i] + b[r,g] * sum_i x[i].
+// Same lane layout, one word (8 columns) per lane and step; the slots are masked in place as in
+// the ternary kernels (q * 16^k, input pre-divided by 16^k, exact). A thread serves R rows and BT
+// tokens; in the last group of BT the tokens past n are computed from whatever the input buffer
+// holds there and not stored, so the input buffer must hold ceil(n / BT) * BT tokens.
+// Grid (32, rows / R, ceil(n / BT)), threadgroup (32, 1, 1).
+struct A4P { uint rows; uint groups; uint n; };
+
+#define GEMM_A4(NAME, R, BT)                                                                      \
+kernel void NAME(device const uint *W [[buffer(0)]],                                              \
+                 device const half *S [[buffer(1)]],                                              \
+                 device const half *x [[buffer(2)]],                                              \
+                 device half *y [[buffer(3)]],                                                    \
+                 constant A4P &p [[buffer(4)]],                                                   \
+                 device const half *B [[buffer(5)]],                                              \
+                 uint3 gid [[thread_position_in_grid]],                                           \
+                 uint lane [[thread_index_in_simdgroup]]) {                                       \
+    uint r0 = gid.y * R;                                                                          \
+    uint t0 = gid.z * BT;                                                                         \
+    uint words = p.groups * 8u;                                                                   \
+    uint cols4 = p.groups * 16u;                                                                  \
+    device const uint *w = W + r0 * words + lane;                                                 \
+    uint g0 = r0 * p.groups + (lane >> 3);                                                        \
+    device const half4 *xp = (device const half4 *)(x + lane * 8u) + t0 * cols4;                  \
+    const uint4 c0 = uint4(0x1u, 0x10u, 0x100u, 0x1000u), c1 = c0 << 16u;                         \
+    const float4 d0 = float4(1.0f, 0x1p-4f, 0x1p-8f, 0x1p-12f), d1 = d0 * 0x1p-16f;               \
+    float acc[R * BT];                                                                            \
+    for (uint i = 0; i < R * BT; ++i) acc[i] = 0.0f;                                              \
+    for (uint b = 0; b < words; b += 32u) {                                                       \
+        float4 w0[R], w1[R];                                                                      \
+        float sc[R], bi[R];                                                                       \
+        for (uint i = 0; i < R; ++i) {                                                            \
+            uint4 bits = uint4(w[i * words + b]);                                                 \
+            w0[i] = float4(bits & (c0 * 15u)) * d0;                                               \
+            w1[i] = float4(bits & (c1 * 15u)) * d1;                                               \
+            uint g = g0 + i * p.groups + (b >> 3);                                                \
+            sc[i] = float(S[g]);                                                                  \
+            bi[i] = float(B[g]);                                                                  \
+        }                                                                                         \
+        for (uint t = 0; t < BT; ++t) {                                                           \
+            device const half4 *xt = xp + t * cols4 + b * 2u;                                     \
+            float4 x0 = float4(xt[0]), x1 = float4(xt[1]);                                        \
+            float sx = dot(x0 + x1, float4(1.0f));                                                \
+            for (uint i = 0; i < R; ++i) {                                                        \
+                float v = dot(w0[i], x0) + dot(w1[i], x1);                                        \
+                acc[i * BT + t] += sc[i] * v + bi[i] * sx;                                        \
+            }                                                                                     \
+        }                                                                                         \
+    }                                                                                             \
+    for (uint i = 0; i < R; ++i) {                                                                \
+        for (uint t = 0; t < BT; ++t) {                                                           \
+            float v = simd_sum(acc[i * BT + t]);                                                  \
+            if (lane == 0u && t0 + t < p.n) y[(t0 + t) * p.rows + r0 + i] = half(v);              \
+        }                                                                                         \
+    }                                                                                             \
+}
+
+GEMM_A4(gemm_a4_r4b1, 4, 1)
+GEMM_A4(gemm_a4_r4b2, 4, 2)
+GEMM_A4(gemm_a4_r2b8, 2, 8)
 
 // Batched kernel for many tokens. A threadgroup of 128 threads (4 SIMD groups) computes a tile of
 // 64 rows x 32 tokens. For every block of 32 columns the threads expand the weights (scale folded

@@ -84,6 +84,12 @@ pub const Policy = struct {
         if (self.cool != 0) self.cool -= 1;
     }
 
+    /// A pass of two with a draft model's token, outside the ladder, produced `got` tokens: they
+    /// count against the pause like plain ones.
+    pub fn modelPass(self: *Policy, got: u32) void {
+        self.cool -|= got;
+    }
+
     /// A pass of `n` tokens (a size returned by `size`) produced `got` new tokens (1 to n).
     pub fn passed(self: *Policy, n: u32, got: u32, seconds: f64) void {
         var used: u32 = 0;
@@ -144,4 +150,11 @@ test "policy grows on full acceptance and pauses after a loss" {
     try std.testing.expectEqual(@as(u32, 2), p.stats[2].passes);
     try std.testing.expectEqual(@as(u32, 8 + 1), p.stats[2].tokens);
     try std.testing.expectEqual(@as(u32, 9), p.stats[3].tokens);
+    p.passed(2, 1, 0.1); // the second loss in a row: a pause of 8
+    try std.testing.expectEqual(@as(u32, 8), p.cool);
+    p.modelPass(2);
+    p.modelPass(5);
+    try std.testing.expectEqual(@as(u32, 1), p.cool);
+    p.modelPass(2);
+    try std.testing.expectEqual(@as(u32, 0), p.cool);
 }

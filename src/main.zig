@@ -13,6 +13,7 @@ const model = @import("model.zig");
 const engine_mod = @import("engine.zig");
 const draft = @import("draft.zig");
 const Engine = engine_mod.Engine;
+const DraftEngine = engine_mod.DraftEngine;
 const cfg = model.cfg;
 
 extern "c" fn clock_gettime_nsec_np(clock: c_int) u64;
@@ -40,6 +41,9 @@ const Options = struct {
     /// kernel and is off without it.
     spec: u32 = 32,
     spec_min: u32 = 4,
+    /// Draft model (`tools/convert.py` output of Qwen3.5-0.8B 4-bit): where prompt lookup has no
+    /// match, it proposes one token for a pass of two.
+    draft_path: ?[*:0]const u8 = null,
     dump_dir: ?[]const u8 = null,
     eos: [8]u32 = @splat(std.math.maxInt(u32)),
 
@@ -80,6 +84,8 @@ const Options = struct {
                 opt.engine.gdn_sg = value[0] != '0';
             } else if (std.mem.eql(u8, flag, "--attn-sg")) {
                 opt.engine.attn_sg = try std.fmt.parseInt(u32, value, 10);
+            } else if (std.mem.eql(u8, flag, "--draft")) {
+                opt.draft_path = value.ptr;
             } else if (std.mem.eql(u8, flag, "--dump")) {
                 opt.dump_dir = value;
             } else usage();
@@ -91,7 +97,20 @@ const Options = struct {
             opt.spec = 0;
         }
         opt.engine.max_batch = @max(bt, (@max(opt.prefill_batch, opt.spec) + bt - 1) / bt * bt);
+        if (opt.draft_path != null and opt.spec < 2) return error.DraftNeedsSpeculation;
         return opt;
+    }
+
+    /// Settings of the draft model's engine: same context, batched 4-bit kernel only.
+    fn draftConfig(self: Options) engine_mod.Config {
+        const ab = engine_mod.a4_batch;
+        return .{
+            .max_ctx = self.engine.max_ctx,
+            .max_batch = (@max(self.engine.max_batch, self.spec + 1) + ab - 1) / ab * ab,
+            .gemm_tokens = ab,
+            .gemm_tile = 0,
+            .gemm_tile8 = 0,
+        };
     }
 };
 
@@ -118,6 +137,7 @@ fn usage() noreturn {
         \\       tern bench <model.tern> <matrix> <iters> <batch> [options]
         \\options: --eos a,b  --lookahead k  --prefill-batch n  --dump dir
         \\         --spec n (speculative decoding: most tokens per pass, 0 = off)  --spec-min m
+        \\         --draft <draft.tern> (draft model for passes of two where lookup finds nothing)
         \\         --gemv <kernel> --gemv-rows n  --gemm-rows r --gemm-tokens t --gemm-tile n --gemm-tile8 n --gemm-split 1|2|4
         \\         --gdn-sg 0|1  --attn-sg 0..3 (bit 0 softmax, bit 1 value sum)
         \\
@@ -131,6 +151,17 @@ fn dump(dir: []const u8, name: []const u8, bytes: []const u8) !void {
     const f = fopen(@ptrCast(path.ptr), "wb") orelse return error.DumpOpenFailed;
     defer _ = fclose(f);
     if (fwrite(bytes.ptr, 1, bytes.len, f) != bytes.len) return error.DumpWriteFailed;
+}
+
+/// Feeds the draft model `tok[fed.* .. upto]` in passes of at most its `max_batch` tokens and
+/// advances `fed`; with `head` the last pass also writes its pick for `tok[upto]`.
+fn feedDraft(d: *const DraftEngine, enc: metal.Encoder, fed: *u32, upto: u32, head: bool) void {
+    while (fed.* < upto) {
+        const n = @min(d.max_batch, upto - fed.*);
+        d.encodeBlock(enc, fed.*, n);
+        if (head and fed.* + n == upto) d.encodeHeadLast(enc, fed.*, n);
+        fed.* += n;
+    }
 }
 
 /// Runs one piece of the graph in its own command buffer and waits for it (debug dumps only).
@@ -188,12 +219,23 @@ fn benchMatmul(args: []const [:0]const u8) !void {
 /// tern prof <model.tern> <position> <batch> [options]
 /// GPU time per token of each kernel class at the given context position: each class runs alone
 /// (best of 5 command buffers), then all together. Kernel times do not depend on the data.
+/// Takes the main model or the draft model.
 fn profile(args: []const [:0]const u8) !void {
-    const pos = try std.fmt.parseInt(u32, args[3], 10);
     const n = try std.fmt.parseInt(u32, args[4], 10);
     var opt = try Options.parse(args, 5);
     opt.engine.max_batch = @max(n, opt.engine.gemm_tokens);
-    var engine = try Engine.init(args[2].ptr, opt.engine);
+    const engine = Engine.init(args[2].ptr, opt.engine) catch |err| {
+        if (err != error.ModelShapeMismatch) return err;
+        var dc = opt.draftConfig();
+        dc.max_batch = (@max(n, 1) + engine_mod.a4_batch - 1) / engine_mod.a4_batch * engine_mod.a4_batch;
+        return profileWith(DraftEngine, try DraftEngine.init(args[2].ptr, dc), args, n);
+    };
+    return profileWith(Engine, engine, args, n);
+}
+
+fn profileWith(comptime E: type, engine_in: E, args: []const [:0]const u8, n: u32) !void {
+    var engine = engine_in;
+    const pos = try std.fmt.parseInt(u32, args[3], 10);
     const reps: u32 = if (n == 1) 4 else 1;
     const per_token = 1.0 / @as(f64, @floatFromInt(reps * n));
     const parts = std.enums.values(engine_mod.Part);
@@ -234,6 +276,11 @@ pub fn main(init: std.process.Init) !void {
 
     const t_start = now();
     var engine = try Engine.init(args[2].ptr, opt.engine);
+    var drafter: ?DraftEngine = null;
+    if (opt.draft_path) |path| {
+        drafter = try DraftEngine.initOn(engine.device, engine.lib, path, opt.draftConfig());
+        drafter.?.tok = engine.tok; // the draft reads the same token ids, at the same positions
+    }
     const t_loaded = now();
 
     const tok = engine.tokens();
@@ -252,6 +299,8 @@ pub fn main(init: std.process.Init) !void {
     // kernel, multiples of `gemm_tokens` with the lane kernel), then the tail token by token.
     const bt = engine.gemm_tokens;
     var step: u32 = 0;
+    // Prompt tokens the draft model has seen; it runs in the main model's command buffers.
+    var fed: u32 = 0;
     while (step + 1 < n_prompt) {
         const pool = metal.Pool.push();
         defer pool.pop();
@@ -271,6 +320,7 @@ pub fn main(init: std.process.Init) !void {
             const end = step + @min(serial_chunk, left);
             while (step < end) : (step += 1) engine.encodeToken(enc, step, false);
         }
+        if (drafter) |*d| feedDraft(d, enc, &fed, step, false);
         enc.end();
         cb.commit();
         try cb.wait();
@@ -302,7 +352,8 @@ pub fn main(init: std.process.Init) !void {
     // With speculation, a verification pass starts whenever the context ends in something seen
     // before and no step is in flight (`hold` stops new steps once a match shows up). The pass
     // leaves the recurrent states alone; `pending` counts its accepted tokens until the next
-    // command buffer commits them.
+    // command buffer commits them. With a draft model, every other step is a pass of two: the
+    // draft model catches up on the confirmed tokens and proposes one, in the same command buffer.
     const last_step = n_prompt + n_gen - 2;
     var ring: [max_lookahead]metal.CommandBuffer = undefined;
     var submitted: u32 = step;
@@ -325,20 +376,26 @@ pub fn main(init: std.process.Init) !void {
         }
     }
     const spec = policy.count != 0;
+    var by_draft = draft.Policy.Stat{};
     var pending: u32 = 0;
     var hold = false;
     var stopped = false;
     while (done <= last_step and !stopped) {
         if (spec and submitted == done) {
             hold = false;
-            const n = policy.size(last_step + 1 - done);
-            if (if (n != 0) draft.find(tok[0 .. done + 1], policy.min_match) else null) |match| {
-                draft.fill(tok, done, match, n - 1);
+            const room = last_step + 1 - done;
+            const n_lookup = policy.size(room);
+            const match = if (n_lookup != 0) draft.find(tok[0 .. done + 1], policy.min_match) else null;
+            const by_model = match == null and drafter != null and room >= 2;
+            if (match != null or by_model) {
+                const n: u32 = if (by_model) 2 else n_lookup;
+                if (match) |m| draft.fill(tok, done, m, n - 1);
                 const pool = metal.Pool.push();
                 defer pool.pop();
                 const cb = engine.queue.commandBuffer();
                 const enc = cb.encoder();
                 if (pending != 0) engine.encodeCommit(enc, pending);
+                if (by_model) feedDraft(&drafter.?, enc, &fed, done + 1, true);
                 engine.encodeVerify(enc, done, n);
                 enc.end();
                 const t_pass = now();
@@ -352,7 +409,14 @@ pub fn main(init: std.process.Init) !void {
                 while (got < n and tok[done + got] == pred[got - 1]) got += 1;
                 tok[done + got] = pred[got - 1];
                 t_last = now();
-                policy.passed(n, got, t_last - t_pass);
+                if (by_model) {
+                    policy.modelPass(got);
+                    by_draft.passes += 1;
+                    by_draft.tokens += got;
+                    by_draft.seconds += t_last - t_pass;
+                } else {
+                    policy.passed(n, got, t_last - t_pass);
+                }
                 pending = got;
                 const first = n_out == 0;
                 if (first) t_first = t_last;
@@ -428,7 +492,7 @@ pub fn main(init: std.process.Init) !void {
         const st = policy.stats[i];
         _ = printf(if (i == 0) "{\"size\":%u,\"passes\":%u,\"tokens\":%u,\"s\":%.4f}" else ",{\"size\":%u,\"passes\":%u,\"tokens\":%u,\"s\":%.4f}", policy.sizes[i], st.passes, st.tokens, st.seconds);
     }
-    _ = printf("],\"tokens\":[");
+    _ = printf("],\"draft\":{\"passes\":%u,\"tokens\":%u,\"s\":%.4f},\"tokens\":[", by_draft.passes, by_draft.tokens, by_draft.seconds);
     for (0..n_out) |i| _ = printf(if (i == 0) "%u" else ",%u", tok[n_prompt + i]);
     _ = printf("]}\n");
 }

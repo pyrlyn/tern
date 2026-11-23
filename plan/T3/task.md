@@ -2,7 +2,7 @@
 status: in progress
 priority: P0
 complexity: 5
-readiness: 75%
+readiness: 80%
 agent: Claude Code / claude-fable-5-2
 ---
 
@@ -46,12 +46,15 @@ the non-speculative speed on free text.
       document QA. Simulated with the measured prices: one draft token in a pass of 2 where
       lookup has no match gives 1.22 / 2.57 / 1.34 times plain decoding, the model alone 1.49
       on document QA.
-   2. Next: run the draft model in the engine (`--draft <model>`): the model shape at run time,
-      a product kernel for 4-bit affine weights ([T2](../T2/task.md)), the draft's own state
-      kept in step with the accepted tokens, the pass-of-2 gate. Measured against the
-      simulation, interleaved.
+   2. Done: the draft model runs in the engine (`--draft <model>`, off by default): engine
+      generic over the model shape, 4-bit affine kernels, the draft fed only confirmed tokens
+      (no rollback), lookup ladder first, else a pass of 2. Tokens unchanged, acceptance as
+      offline. At load 42 to 108 no gain (-4% / -1% / 0%): the pass of 2 cost 1.7 to 2.1 plain
+      tokens instead of 1.2 to 1.4 (REPORT.md).
+   3. Next: measure `--draft` on a quiet machine; decide acceptance on the GPU so that passes
+      are pipelined like plain tokens (6 to 9 ms idle per pass now).
 
-State: steps 1 to 6 are done. `bench/compare.py`, 3 rounds, with the 2-token pass: decode against
+State: steps 1 to 6 and 7.1, 7.2 are done. `bench/compare.py`, 3 rounds, with the 2-token pass: decode against
 llama.cpp and MLX-LM +180% and +165% on code_edit, +33% and +22% on doc_qa, +21% and +7% on
 free_text, `matches_mlx` true everywhere. The check below holds for code_edit and free_text, not
 for doc_qa.
