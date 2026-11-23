@@ -17,3 +17,11 @@ Done means: the engine is written against a backend interface with Metal as the 
 implementation, and a second backend exists where hardware is available.
 
 Check: `zig build -Dbackend=metal` produces the same tokens and speed as before the split; a second backend passes the same token check on its hardware.
+
+## Design
+
+The compile-time interface, memory model, backend set, Zig signature sketch, and
+reuse / port / rewrite analysis are in [docs/backend-abstraction.md](../../docs/backend-abstraction.md).
+That document is the specification for this task. Do not re-introduce a vtable on
+the encode path.
+
