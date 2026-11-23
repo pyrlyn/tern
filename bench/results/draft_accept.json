@@ -1,0 +1,411 @@
+{
+ "model": "models/qwen3.5-0.8b-4bit",
+ "draft_ms": 2.7450104062154423,
+ "plain_ms": 27.0,
+ "d": {
+  "measured": 0.10166705208205341,
+  "low": 0.07,
+  "high": 0.15
+ },
+ "prompts": {
+  "free_text": {
+   "tokenizer_matches": true,
+   "forward_s": 0.04894808301469311,
+   "first_token_accepted": 0.525,
+   "first_token_accepted_without_lookup": 0.525,
+   "positions_with_lookup": 0,
+   "mean_run": 0.825,
+   "run_at_least": {
+    "1": 0.525,
+    "2": 0.23,
+    "3": 0.06,
+    "4": 0.01,
+    "7": 0.0
+   },
+   "speedup": {
+    "lookup": {
+     "lookup_ladder_then_model_pair": null,
+     "policy": 1.0,
+     "policy_no_pause_for_model": 1.0,
+     "oracle": 1.0
+    },
+    "model d=measured": {
+     "lookup_ladder_then_model_pair": null,
+     "policy": 1.0103475237880677,
+     "policy_no_pause_for_model": 0.9556951547522711,
+     "oracle": 1.3570206064640804
+    },
+    "model d=low": {
+     "lookup_ladder_then_model_pair": null,
+     "policy": 1.0203040506070808,
+     "policy_no_pause_for_model": 0.9890707680134515,
+     "oracle": 1.3804527885146332
+    },
+    "model d=high": {
+     "lookup_ladder_then_model_pair": null,
+     "policy": 0.9955201592832256,
+     "policy_no_pause_for_model": 0.9088843444671646,
+     "oracle": 1.3227513227513226
+    },
+    "both d=measured": {
+     "lookup_ladder_then_model_pair": 1.219747339927444,
+     "policy": 1.0103475237880677,
+     "policy_no_pause_for_model": 0.9556951547522711,
+     "oracle": 1.3570206064640804
+    },
+    "both d=low": {
+     "lookup_ladder_then_model_pair": 1.2514078338130405,
+     "policy": 1.0203040506070808,
+     "policy_no_pause_for_model": 0.9890707680134515,
+     "oracle": 1.3804527885146332
+    },
+    "both d=high": {
+     "lookup_ladder_then_model_pair": 1.1743981209630052,
+     "policy": 0.9955201592832256,
+     "policy_no_pause_for_model": 0.9088843444671646,
+     "oracle": 1.3227513227513226
+    }
+   },
+   "gated": {
+    "d=measured tau=0": {
+     "model": 1.2197473399274381,
+     "lookup_then_model": 1.2197473399274381
+    },
+    "d=measured tau=0.3": {
+     "model": 1.1285826431043564,
+     "lookup_then_model": 1.1285826431043564
+    },
+    "d=measured tau=0.5": {
+     "model": 1.099958226939716,
+     "lookup_then_model": 1.099958226939716
+    },
+    "d=measured tau=0.7": {
+     "model": 1.0556870654822452,
+     "lookup_then_model": 1.0556870654822452
+    },
+    "d=measured tau=0.8": {
+     "model": 1.0341524728886289,
+     "lookup_then_model": 1.0341524728886289
+    },
+    "d=measured tau=0.9": {
+     "model": 1.0066012326383864,
+     "lookup_then_model": 1.0066012326383864
+    },
+    "d=low tau=0": {
+     "model": 1.2514078338130405,
+     "lookup_then_model": 1.2514078338130405
+    },
+    "d=low tau=0.3": {
+     "model": 1.1809163911195097,
+     "lookup_then_model": 1.1809163911195097
+    },
+    "d=low tau=0.5": {
+     "model": 1.1448196908986858,
+     "lookup_then_model": 1.1448196908986858
+    },
+    "d=low tau=0.7": {
+     "model": 1.0940919037199157,
+     "lookup_then_model": 1.0940919037199157
+    },
+    "d=low tau=0.8": {
+     "model": 1.0704345964461601,
+     "lookup_then_model": 1.0704345964461601
+    },
+    "d=low tau=0.9": {
+     "model": 1.0402579839800306,
+     "lookup_then_model": 1.0402579839800306
+    },
+    "d=high tau=0": {
+     "model": 1.174398120963001,
+     "lookup_then_model": 1.174398120963001
+    },
+    "d=high tau=0.3": {
+     "model": 1.0570824524312867,
+     "lookup_then_model": 1.0570824524312867
+    },
+    "d=high tau=0.5": {
+     "model": 1.037882719252721,
+     "lookup_then_model": 1.037882719252721
+    },
+    "d=high tau=0.7": {
+     "model": 1.0020040080160286,
+     "lookup_then_model": 1.0020040080160286
+    },
+    "d=high tau=0.8": {
+     "model": 0.9832841691248739,
+     "lookup_then_model": 0.9832841691248739
+    },
+    "d=high tau=0.9": {
+     "model": 0.9592326139088697,
+     "lookup_then_model": 0.9592326139088697
+    }
+   }
+  },
+  "code_edit": {
+   "tokenizer_matches": true,
+   "forward_s": 0.10599416703917086,
+   "first_token_accepted": 0.985,
+   "first_token_accepted_without_lookup": 0.95,
+   "positions_with_lookup": 180,
+   "mean_run": 25.02,
+   "run_at_least": {
+    "1": 0.985,
+    "2": 0.965,
+    "3": 0.945,
+    "4": 0.93,
+    "7": 0.895
+   },
+   "speedup": {
+    "lookup": {
+     "lookup_ladder_then_model_pair": null,
+     "policy": 2.3923444976076556,
+     "policy_no_pause_for_model": 2.3923444976076556,
+     "oracle": 2.6899798251513114
+    },
+    "model d=measured": {
+     "lookup_ladder_then_model_pair": null,
+     "policy": 2.011194050079804,
+     "policy_no_pause_for_model": 2.192699946423908,
+     "oracle": 2.5555271735798453
+    },
+    "model d=low": {
+     "lookup_ladder_then_model_pair": null,
+     "policy": 2.1523891519586744,
+     "policy_no_pause_for_model": 2.3713540431586435,
+     "oracle": 2.7647221454243853
+    },
+    "model d=high": {
+     "lookup_ladder_then_model_pair": null,
+     "policy": 1.8281535648994522,
+     "policy_no_pause_for_model": 1.9665683382497547,
+     "oracle": 2.2909507445589927
+    },
+    "both d=measured": {
+     "lookup_ladder_then_model_pair": 2.5749966279217213,
+     "policy": 2.27738544143848,
+     "policy_no_pause_for_model": 2.27738544143848,
+     "oracle": 3.128583969126044
+    },
+    "both d=low": {
+     "lookup_ladder_then_model_pair": 2.58765687669815,
+     "policy": 2.287282708142727,
+     "policy_no_pause_for_model": 2.287282708142727,
+     "oracle": 3.201536737634064
+    },
+    "both d=high": {
+     "lookup_ladder_then_model_pair": 2.555910543130991,
+     "policy": 2.2624434389140275,
+     "policy_no_pause_for_model": 2.2624434389140275,
+     "oracle": 3.023431594860167
+    }
+   },
+   "gated": {
+    "d=measured tau=0": {
+     "model": 1.5820485300048992,
+     "lookup_then_model": 1.9995999875213029
+    },
+    "d=measured tau=0.3": {
+     "model": 2.0231289714050016,
+     "lookup_then_model": 1.9829782520508854
+    },
+    "d=measured tau=0.5": {
+     "model": 2.161147337515144,
+     "lookup_then_model": 2.0910282364744592
+    },
+    "d=measured tau=0.7": {
+     "model": 2.2431559816226985,
+     "lookup_then_model": 2.1677072118949314
+    },
+    "d=measured tau=0.8": {
+     "model": 2.3399084034023585,
+     "lookup_then_model": 2.017076969901919
+    },
+    "d=measured tau=0.9": {
+     "model": 1.7586004351141626,
+     "lookup_then_model": 1.972548059952839
+    },
+    "d=low tau=0": {
+     "model": 1.623113130985231,
+     "lookup_then_model": 2.007226013649137
+    },
+    "d=low tau=0.3": {
+     "model": 2.2177866489243736,
+     "lookup_then_model": 2.084418968212611
+    },
+    "d=low tau=0.5": {
+     "model": 2.377555872563005,
+     "lookup_then_model": 2.1987686895338614
+    },
+    "d=low tau=0.7": {
+     "model": 2.457908320019663,
+     "lookup_then_model": 2.267316630767487
+    },
+    "d=low tau=0.8": {
+     "model": 2.5829781738344315,
+     "lookup_then_model": 2.09885612341274
+    },
+    "d=low tau=0.9": {
+     "model": 1.946093217865136,
+     "lookup_then_model": 2.026342451874367
+    },
+    "d=high tau=0": {
+     "model": 1.5232292460015178,
+     "lookup_then_model": 1.9880715705765404
+    },
+    "d=high tau=0.3": {
+     "model": 1.784121320249777,
+     "lookup_then_model": 1.8458698661744346
+    },
+    "d=high tau=0.5": {
+     "model": 1.8975332068311197,
+     "lookup_then_model": 1.9455252918287935
+    },
+    "d=high tau=0.7": {
+     "model": 1.9792182088075212,
+     "lookup_then_model": 2.031488065007618
+    },
+    "d=high tau=0.8": {
+     "model": 2.046035805626598,
+     "lookup_then_model": 1.9038553069966684
+    },
+    "d=high tau=0.9": {
+     "model": 1.5331544653123803,
+     "lookup_then_model": 1.8957345971563981
+    }
+   }
+  },
+  "doc_qa": {
+   "tokenizer_matches": true,
+   "forward_s": 0.12090099998749793,
+   "first_token_accepted": 0.875,
+   "first_token_accepted_without_lookup": 0.8095238095238095,
+   "positions_with_lookup": 95,
+   "mean_run": 10.305,
+   "run_at_least": {
+    "1": 0.875,
+    "2": 0.775,
+    "3": 0.7,
+    "4": 0.645,
+    "7": 0.49
+   },
+   "speedup": {
+    "lookup": {
+     "lookup_ladder_then_model_pair": null,
+     "policy": 1.1001100110011,
+     "policy_no_pause_for_model": 1.1001100110011,
+     "oracle": 1.305909239307868
+    },
+    "model d=measured": {
+     "lookup_ladder_then_model_pair": null,
+     "policy": 1.2355079381503278,
+     "policy_no_pause_for_model": 1.2669044041974995,
+     "oracle": 1.834412522650775
+    },
+    "model d=low": {
+     "lookup_ladder_then_model_pair": null,
+     "policy": 1.2847690627609687,
+     "policy_no_pause_for_model": 1.3420116755015765,
+     "oracle": 1.927339308085189
+    },
+    "model d=high": {
+     "lookup_ladder_then_model_pair": null,
+     "policy": 1.1672016340822873,
+     "policy_no_pause_for_model": 1.1672016340822877,
+     "oracle": 1.708671507902607
+    },
+    "both d=measured": {
+     "lookup_ladder_then_model_pair": 1.3364664019606753,
+     "policy": 1.1842258866319744,
+     "policy_no_pause_for_model": 1.1729284638682487,
+     "oracle": 1.8844803521109401
+    },
+    "both d=low": {
+     "lookup_ladder_then_model_pair": 1.353363107321695,
+     "policy": 1.2027181430031872,
+     "policy_no_pause_for_model": 1.2014898474107893,
+     "oracle": 1.9654088050314469
+    },
+    "both d=high": {
+     "lookup_ladder_then_model_pair": 1.3114754098360661,
+     "policy": 1.1570726063060457,
+     "policy_no_pause_for_model": 1.131861912846633,
+     "oracle": 1.773049645390072
+    }
+   },
+   "gated": {
+    "d=measured tau=0": {
+     "model": 1.4933355283223808,
+     "lookup_then_model": 1.4275684997760727
+    },
+    "d=measured tau=0.3": {
+     "model": 1.29431556931907,
+     "lookup_then_model": 1.3265667894717672
+    },
+    "d=measured tau=0.5": {
+     "model": 1.3281816466542655,
+     "lookup_then_model": 1.3186515934149639
+    },
+    "d=measured tau=0.7": {
+     "model": 1.3940670823955295,
+     "lookup_then_model": 1.3854086390654727
+    },
+    "d=measured tau=0.8": {
+     "model": 1.3583101175854806,
+     "lookup_then_model": 1.3414709909309828
+    },
+    "d=measured tau=0.9": {
+     "model": 1.3208577175362322,
+     "lookup_then_model": 1.3463626160906903
+    },
+    "d=low tau=0": {
+     "model": 1.5320974413972739,
+     "lookup_then_model": 1.4468639224480941
+    },
+    "d=low tau=0.3": {
+     "model": 1.4108352144469527,
+     "lookup_then_model": 1.4186409419775856
+    },
+    "d=low tau=0.5": {
+     "model": 1.4432096983691722,
+     "lookup_then_model": 1.3827433628318582
+    },
+    "d=low tau=0.7": {
+     "model": 1.4961101137043686,
+     "lookup_then_model": 1.444669170759896
+    },
+    "d=low tau=0.8": {
+     "model": 1.4503263234227701,
+     "lookup_then_model": 1.392951664577239
+    },
+    "d=low tau=0.9": {
+     "model": 1.3937282229965169,
+     "lookup_then_model": 1.3905304873809368
+    },
+    "d=high tau=0": {
+     "model": 1.437814521926666,
+     "lookup_then_model": 1.3990905911157723
+    },
+    "d=high tau=0.3": {
+     "model": 1.1494252873563215,
+     "lookup_then_model": 1.2070006035003014
+    },
+    "d=high tau=0.5": {
+     "model": 1.1841326228537592,
+     "lookup_then_model": 1.231527093596059
+    },
+    "d=high tau=0.7": {
+     "model": 1.262626262626262,
+     "lookup_then_model": 1.3037809647979137
+    },
+    "d=high tau=0.8": {
+     "model": 1.2383900928792562,
+     "lookup_then_model": 1.2698412698412693
+    },
+    "d=high tau=0.9": {
+     "model": 1.223241590214066,
+     "lookup_then_model": 1.2841091492776877
+    }
+   }
+  }
+ }
+}

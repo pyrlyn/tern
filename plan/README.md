@@ -40,3 +40,7 @@ Tasks are the folders next to this file. Numbers and the gap to the goals are in
 - The price of a pass in plain tokens depends on the state of the machine: the batched products
   are compute-bound and slow down more under load than the memory-bound plain token (a 4-token
   pass was 2.1 plain tokens at load 8 to 25 and 2.9 in the slow state).
+- Qwen3.5-0.8B as a draft for Ternary Bonsai 27B, measured offline: its greedy token equals the
+  27B reference on 53% of free-text positions, 88% on document QA, 98% on code edit. The right
+  gate for it is one draft token in a pass of 2, not the ladder of prompt lookup. Free text
+  stays below +40% over plain decoding with this draft even under an oracle gate (+36%).

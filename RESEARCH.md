@@ -155,16 +155,26 @@ What this does not cover: acceptance is not independent from token to token, d i
 and a draft model that drafts one token per plain token has to keep its own state in step with
 the main model (one more draft-model token per accepted token, not counted above).
 
+**Measured.** Qwen3.5-0.8B in MLX 4-bit, offline against the reference tokens (REPORT.md,
+`bench/draft_accept.py`): first draft token right in 53% of the positions on free text, 88% on
+document QA, 98% on code edit; 2.75 to 3.04 ms per draft token in mlx-lm. One draft token in a
+pass of 2 at every position gives 1.22, 1.49 and 1.58 times plain decoding; with prompt lookup
+first where it matches, code edit reaches 2.57. The independence model of the table above
+predicts +20 to +28% at p of 0.5 to 0.6 and +52% at p = 0.9 for d = 0.10, close to what the
+measured runs give. The MTP head and Ternary-Bonsai-2-2B were not measured.
+
 Order of work that follows:
 
 1. Done: the price of the short pass (a 2-token pass at 1.1 to 1.3 plain tokens; kernels for a
    cheaper 4-token and 8-token pass were tried and rejected, REPORT.md).
-2. Measure p before building anything: run the draft candidate over the prompt and the 27B
+2. Done for Qwen3.5-0.8B, see above. Measure p before building anything: run the draft candidate over the prompt and the 27B
    reference tokens once (teacher forcing, in Python with mlx-lm) and count how often its
    greedy token equals the reference. The accepted run lengths are exact for a greedy draft, and
    the policy simulation turns them into a speed. Needs the 0.63 GB download of the 4-bit 0.8B
    model. The bar is p of 0.71 to 0.82 for the first draft token.
-3. Only then run the draft model inside tern (run-time model shape, the kernel for its format).
+3. Run the draft model inside tern (run-time model shape, the kernel for its 4-bit affine
+   format, its own recurrent state rolled back with the main model's) with one draft token in a
+   pass of 2 where prompt lookup has no match.
 
 ## Not measured
 
