@@ -206,6 +206,10 @@ The lane split is below the 10% bar on the bench prompts; it is kept because its
 the context length and the tokens are unchanged. Say so if the bar should apply to it as well:
 `--gdn-sg 0 --attn-sg 0` restores the serial kernels.
 
+The gate of the draft model (`--gate`, on with `--draft`) is not a speed candidate either: it
+keeps `--draft` from losing on free text (1.00 against 0.98 of plain decode, 6 interleaved
+rounds, load 5 to 18) and costs nothing measurable on the other two prompts.
+
 Rejected:
 
 | Candidate | Result |
@@ -455,6 +459,39 @@ give the same bits as the single-token kernel, so the two tokens can share only 
 and they do. With the pass at 1.5 to 1.7 plain tokens on this machine, the draft model gains
 where it is right more often than that price minus one: on doc_qa (83%), not on free_text (52%).
 
+**Gate for the draft model** (`draft.Gate`, `--gate 0|1`, on with `--draft`). Whether a pass of
+two beats a plain token depends on the text and on the state of the machine, so the gate times
+both: 16 tokens of draft-model passes, 16 plain tokens, then 96 tokens the faster way before the
+other one is tried again; the stay doubles, up to 384, while the retrial confirms the choice. The
+first 4 tokens of a stretch are not timed, and the passes have to be 5% faster to be chosen.
+Positions with a prompt match are not touched. Tokens equal to MLX-LM on the three prompts.
+
+Decode in tok/s, one binary, interleaved rounds, medians; in brackets the median of the per-round
+ratio to plain:
+
+| Run | Prompt | Plain | `--draft --gate 0` | `--draft` |
+| --- | --- | --- | --- | --- |
+| 6 rounds, load 5 to 18 | free_text | 19.0 | 18.0 (0.98) | 19.0 (1.00) |
+| | doc_qa | 20.0 | 20.7 (1.04) | 21.2 (1.06) |
+| | code_edit | 39.4 | 41.5 (1.02) | 43.8 (1.05) |
+| 8 rounds, load 4 to 9, first stay 48 | free_text | 19.9 | 19.6 (0.99) | 19.5 (0.99) |
+| | doc_qa | 21.3 | 23.1 (1.08) | 22.4 (1.05) |
+| 5 rounds, load 8 to 135, first stay 48 | free_text | 18.9 | 20.3 (1.04) | 18.0 (0.98) |
+| | doc_qa | 22.9 | 21.3 (1.00) | 25.7 (1.05) |
+| | code_edit | 41.8 | 41.3 (0.99) | 42.9 (1.02) |
+
+- On free text the gate went to plain tokens in 16 of 19 runs: 36 or 37 of the 200 tokens came
+  from draft-model passes instead of 199. Its own timings there: a token costs from 4% less to
+  13% more through a pass than plain. On doc_qa it stayed with the passes (12 to 26% cheaper per
+  token by its timings), 95 tokens through them against 111 without the gate (78 with the first
+  stay of 48).
+- With a first stay of 48 tokens the plain trials cost 3% on doc_qa in the quiet run (1.05
+  against 1.08, below the ungated run in 7 of 8 rounds); 96 halves the trials. The last row group is too noisy to
+  separate the three columns (per-round ratios 0.84 to 1.17).
+- What it buys is small: the ungated draft lost 1 to 2% on free text in the two quieter runs (4
+  to 10% in earlier, heavier ones), the gated one 0 to 1%. It is a safety device, not a gain: `--draft`
+  is still worth +4 to +8% on doc_qa and nothing on free text.
+
 **Prefill.** From 35 tok/s at the start of the session to 92 to 128 tok/s depending on the state
 of the machine; under identical conditions still 25 to 31% behind llama.cpp and 13 to 21% behind
 MLX-LM on the long prompts, and ahead of MLX-LM on the short one. Known losses: the last tokens
@@ -477,7 +514,10 @@ acceptance on the GPU did not lower that price (1.45 to 1.6 plain tokens, GPU-bo
 time left) and moved `--draft` to -5% / +6% / +19% against its earlier version, inside the noise
 of load 22 to 135. Profiled by piece, the pass is 1.50 to 1.55 plain tokens once the GPU has
 slowed down, 87 to 90% of it the block of two tokens itself; the commit and the draft model's
-part are 0.04 and 0.10 to 0.12, and nothing inside the pass is worth 10%. It stays off by default. Prefill: 31% behind llama.cpp and 11 to 21% behind MLX-LM on the long
+part are 0.04 and 0.10 to 0.12, and nothing inside the pass is worth 10%. A gate now times the
+passes against plain tokens and runs the faster way: with it `--draft` is at plain speed on free
+text (1.00 against 0.98 without the gate) and +5 to +6% on document QA at load 4 to 18. It stays
+off by default. Prefill: 31% behind llama.cpp and 11 to 21% behind MLX-LM on the long
 prompts. First token within 1.8 s: not reached on the long prompts.
 
 ## What was not done
@@ -488,8 +528,8 @@ prompts. First token within 1.8 s: not reached on the long prompts.
 - A cheaper pass of 2: it costs 1.5 to 1.7 plain tokens here and the draft model needs 1.2 to
   1.3 to gain on free text; the block of two tokens alone is 1.33 to 1.40, and what is left
   around it (commit, draft model) is worth 3% each at most ([T3](plan/T3/task.md)).
-- A gate that turns the draft-model passes off while their measured price is above their yield
-  (free text at this load).
+- The gate of the draft model under a steady heavy load (above 40), where the ungated draft lost
+  4 to 10% on free text earlier: the runs here were at load 4 to 18, or too noisy.
 - A faster prefill of the draft model (0.9 ms per prompt token, +9% on the prefill).
 - A cheaper 4-token or 8-token pass: every kernel variant tried was slower or inside the noise.
 - Kernels for Q8_0 and f16 ([T2](plan/T2/task.md)), fused small kernels ([T5](plan/T5/task.md)),

@@ -55,3 +55,7 @@ Tasks are the folders next to this file. Numbers and the gap to the goals are in
 - GPU timings depend on what ran just before: a plain token takes 28 to 30 ms after a pause and
   48 to 52 ms right after two passes. Pieces are comparable only after the same warm-up and in
   a shuffled order (`tern prof --draft` does both).
+- The draft model's gate needs a margin and few trials. Timed inside one run, a free-text token
+  costs from 4% less to 13% more through a pass than plain, and without a margin the gate
+  followed that noise into the passes. Each trial of the slower way costs: on doc_qa 16 plain
+  tokens per 48 took 3% off the run.
