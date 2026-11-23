@@ -103,6 +103,58 @@ Sampling on the GPU (22) is done and is no longer a candidate.
 4. EAGLE-3 speculation (7).
 5. Kernels for 4-bit and FP8 weights, and one fused kernel per small model (18, 24).
 
+## Draft sources for Ternary Bonsai 27B
+
+For [T3](plan/T3/task.md). Checked on Hugging Face on 2026-11-22 from the config files and file
+lists; no model was downloaded. Every candidate has the tokenizer of the 27B model (vocabulary
+248320) and the Qwen3.5 hybrid layout. Costs per draft token are estimates, not measurements:
+weights read at the rate of the 27B decode (6.8 GB in 18.3 ms) plus 0.1 ms per layer for the
+small kernels, against 26 ms for a plain token.
+
+| Candidate | What it is | Size | What tern needs to run it | Cost per draft token |
+| --- | --- | --- | --- | --- |
+| [Qwen3.5-0.8B](https://huggingface.co/Qwen/Qwen3.5-0.8B), also as [MLX 4-bit](https://huggingface.co/mlx-community/Qwen3.5-0.8B-4bit) | 24 layers, hidden size 1024, tied embeddings, Apache-2.0 | 0.87B parameters; 1.75 GB bf16, 0.63 GB 4-bit | The model shape at run time instead of compile time; a product kernel for 4-bit affine or f16 weights ([T2](plan/T2/task.md)) | about 3.5 ms, 0.13 plain tokens |
+| MTP head of [Qwen3.5-27B](https://huggingface.co/Qwen/Qwen3.5-27B) | One more decoder layer and a projection (`mtp.*`, 15 tensors) that predict the token after next from the main model's last hidden state. The Ternary Bonsai 27B files do not carry it | about 0.4B parameters, 0.8 GB bf16 | An f16 or 4-bit kernel for one layer; the head and the embeddings are those of the main model | 1.7 to 3.3 ms, 0.07 to 0.13 plain tokens |
+| [Ternary-Bonsai-2-2B MLX 2-bit](https://huggingface.co/prism-ml/Ternary-Bonsai-2-2B-mlx-2bit) | 24 layers, hidden size 2048, 2-bit ternary with groups of 128 like the 27B file, but stored behind a Walsh-Hadamard rotation of the input (`hadamard.json`); stock mlx-lm does not load it | 1.2 GB | The model shape at run time; a Hadamard transform in front of every rotated product | about 4 ms, 0.15 plain tokens |
+
+Ruled out: the first Bonsai generation (1.7B, 4B, 8B) is built on Qwen3 with a vocabulary of
+151669; the MTP heads shipped with Ternary-Bonsai-2-4B and 9B belong to hidden sizes 2560 and
+4096.
+
+Risks. The MTP head was trained on the hidden states of the bf16 model, not of the ternary one,
+so its acceptance on our model is unknown. The vendor's note for its own MTP drafters
+([MTP.md](https://huggingface.co/prism-ml/Ternary-Bonsai-2-9B-mlx-2bit/blob/main/MTP.md)) says
+they help on copy-heavy work and are level with plain decoding or slightly slower on general
+chat.
+
+**The price of a pass decides before the draft does.** With a draft token accepted with
+probability p, independently, a draft cost d and the measured pass prices (2.9 plain tokens for
+4 tokens, 4.0 for 8, 8.2 for 32), the best pass size gives:
+
+| | p = 0.70 | 0.80 | 0.85 | 0.90 | 0.95 | break-even | +40% at |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| measured prices, d = 0.10 | 0% | 0% | +3% | +21% | +43% | p = 0.84 | p = 0.94 |
+| measured prices, d = 0.15 | 0% | 0% | 0% | +13% | +33% | p = 0.86 | p = 0.96 |
+| short passes at 1.2 / 1.5 / 2.2 for 2 / 4 / 8 tokens, d = 0.10 | +41% | +64% | +77% | +96% | +132% | p = 0.50 | p = 0.70 |
+| the same, d = 0.15 | +30% | +51% | +63% | +76% | +107% | p = 0.50 | p = 0.75 |
+
+A small model does not agree with a 27B model on 94% of free-text tokens, so with today's pass
+prices no candidate can reach the goal, and below 84% it loses. The short-pass prices in the
+lower rows are an assumption: they are what a 4-token pass would cost if its matrix product ran
+at the throughput of the 32-token tile (4.3 T products per second; the lane kernel does 1.9 to
+2.2). With them prompt lookup alone would have an oracle bound of +88% on doc_qa instead of +36%.
+
+Order of work that follows:
+
+1. Measure p before building anything: run the draft candidate over the prompt and the 27B
+   reference tokens once (teacher forcing, in Python with mlx-lm) and count how often its
+   greedy token equals the reference. The accepted run lengths are exact for a greedy draft, and
+   the policy simulation turns them into a speed. Needs the 0.63 GB download of the 4-bit 0.8B
+   model.
+2. Bring the price of a 4-token and an 8-token pass down; this helps prompt lookup at once and
+   is the condition for any draft model.
+3. Only then run the draft model inside tern (run-time model shape, the kernel for its format).
+
 ## Not measured
 
 vLLM and SGLang need an NVIDIA GPU; MLC LLM and ExecuTorch targets need a phone. Neither is
