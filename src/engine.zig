@@ -152,6 +152,8 @@ pub fn EngineOf(comptime cfg: type) type {
         const conv_state_bytes = (cfg.conv_taps - 1) * cfg.conv_dim * 2;
         const delta_state_bytes = cfg.lin_v_heads * cfg.lin_dv * cfg.lin_dk * 4;
         const lin_state_bytes = conv_state_bytes + delta_state_bytes;
+        /// Length of the `state` buffer: the recurrent states of all linear layers.
+        pub const state_len = cfg.n_linear * lin_state_bytes;
         /// Length of a linear layer's input projection [qkv | z | b | a].
         const lin_ps = cfg.conv_dim + cfg.lin_v_heads * cfg.lin_dv + 2 * cfg.lin_v_heads;
 
@@ -276,7 +278,7 @@ pub fn EngineOf(comptime cfg: type) type {
             self.logits = try device.buffer(mb * cfg.vocab * 2);
             self.pred = try device.buffer(mb * 4);
             self.tok = try device.buffer((@as(usize, max_ctx) + 1) * 4);
-            self.state = try device.buffer(cfg.n_linear * lin_state_bytes);
+            self.state = try device.buffer(state_len);
             self.kv = try device.buffer(@as(usize, cfg.n_full) * 2 * kvBytes(max_ctx));
 
             if (cfg.bits == 4) {
