@@ -15,7 +15,8 @@ its README. Pair 1: Inkling 2 Mini `AD-IQ2_M` + `dspark-Inkling-2-Mini-Q8_0.gguf
 (14436 MiB budget, `-c 4096`, q4_0 KV, `--spec-type draft-dspark`), on Atomic's archive fixture
 (`tools/expert-source/bench-inkling-metal.py`) and on tern's three prompts. Pair 2: check whether
 Atomic Engine loads `Ternary-Bonsai-27B-Q2_0.gguf` with `Ternary-Bonsai-27B-dspark-Q4_1.gguf`
-(`--spec-type draft-dspark`); if it does, measure it on the three prompts; if not, record why.
+(`--spec-type draft-dspark`); if it does, measure it on the three prompts; if not, record why: then the 2x gate in T27 applies to the Inkling pair only (creator's
+decision, 24 November 2026).
 Also record Atomic's greedy tokens without the draft as the Inkling token reference.
 
 On: Zig 0.17 and Metal (Apple Silicon, measured on the M3 Max 64 GB), no new runtime dependencies.

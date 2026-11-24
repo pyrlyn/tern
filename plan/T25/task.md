@@ -9,10 +9,15 @@ agent:
 # T25. DSpark drafts for MoE targets
 
 Reuse T24's draft graph for (a) Qwen3.5-35B-A3B with `jinzex/Qwen3.5-35B-A3B-DSpark` @
-`9aede6f56fa546dbf1f62fe9974d596620fae201` (block 8, taps 1, 8, 15, 23, 30, 37, confidence head;
-check its license before shipping) and (b) Inkling 2 Mini with `dspark-Inkling-2-Mini-Q8_0.gguf`
+`9aede6f56fa546dbf1f62fe9974d596620fae201` (block 8, taps 1, 8, 15, 23, 30, 37, confidence head) and (b) Inkling 2 Mini with `dspark-Inkling-2-Mini-Q8_0.gguf`
 (`dflash` with Markov context, block 8, taps over unrolled visits 5, 23, 41, 48, softcap 30). Verify
 uses the batched MoE pass of T14.
+
+License (checked 24 November 2026): the jinzex head has **no license** (no card field, no README
+text, no LICENSE file at `main`, `v1.0` or `v1.1`, no safetensors metadata). It is **not usable until
+the author confirms a license**: local measurement only, not shipped, not published in converted
+form, not a gate dependency. Fallback for (a): train a Qwen3.5-35B-A3B head with the same recipe in
+T26's setup. The Inkling draft (b) is Apache-2.0 (same repo as the model).
 
 On: Zig 0.17 and Metal (Apple Silicon, measured on the M3 Max 64 GB), no new runtime dependencies.
 

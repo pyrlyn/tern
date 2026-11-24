@@ -23,7 +23,8 @@ draft at full residency (zero expert misses at 14 GiB); at 4 GiB without the dra
 The goal is **2x Atomic Engine**: about **211 tok/s** against the published figure. Because the
 machines differ (tern is measured on an M3 Max 64 GB), the gate is a same-machine one: T10 runs
 Atomic Engine on the M3 Max, and T27 requires tern `>= 2x` that run, interleaved, with greedy
-tokens equal to the reference. Two pairs are gated:
+tokens equal to the reference. Two pairs are gated (if Atomic Engine cannot run the Bonsai pair, T10, the gate is the Inkling
+pair only):
 
 | Pair | tern | Atomic Engine | Reference for greedy tokens |
 | --- | --- | --- | --- |
@@ -46,7 +47,7 @@ needs the block draft and a verify pass that reads the union of experts once (T1
 | Dense target (today) | `prism-ml/Ternary-Bonsai-27B-mlx-2bit` @ `70f75f3ad081ab840a42f3304c02c27e7f89bfb7` | 8.49 GB | Already used by tern |
 | Bonsai DSpark head | `prism-ml/Ternary-Bonsai-27B-gguf` @ `86e89f34c93201c3dfd5e5880fedb0022fc7e34d` | `Ternary-Bonsai-27B-dspark-Q4_1.gguf` 1.95 GB, `...-dspark-bf16.gguf` 7.29 GB | **Pretrained, Apache-2.0.** See below |
 | MoE bring-up target | `mlx-community/Qwen3.5-35B-A3B-4bit` @ `1e20fd8d42056f870933bf98ca6211024744f7ec` | 20.4 GB | Same GDN/attention blocks as Bonsai, MLX safetensors, MLX-LM reference |
-| Its DSpark head | `jinzex/Qwen3.5-35B-A3B-DSpark` @ `9aede6f56fa546dbf1f62fe9974d596620fae201` | 1.01 GB bf16 | Block 8, Model Optimizer recipe; no license field on the card |
+| Its DSpark head | `jinzex/Qwen3.5-35B-A3B-DSpark` @ `9aede6f56fa546dbf1f62fe9974d596620fae201` | 1.01 GB bf16 | Block 8, Model Optimizer recipe; **no license found, not usable until the author confirms one** |
 | Atomic comparison branch | `AtomicChat/Inkling-2-Mini-GGUF` @ `309509848b3151419aa26d069eb03db57fd29a00` | `Inkling-2-Mini-AD-IQ2_M.gguf` 8.67 GB, `dspark-Inkling-2-Mini-Q8_0.gguf` 0.50 GB | Apache-2.0, base `thinkingmachines/Inkling-2-Mini` |
 | Alternative Bonsai draft | `z-lab/Qwen3.5-27B-DFlash` @ `25ee0025ff950496a634e100b75c2db4515e9824` | 4.26 GB bf16 | DFlash, block 16, trained on bf16 Qwen3.5-27B, not on the ternary model |
 
@@ -64,14 +65,23 @@ T19, then T25a) is built and gated on it. **Inkling 2 Mini is the Atomic Engine 
 branch** (T20, T21, T22, T25b). It starts after the resident and batched MoE paths work on
 Qwen3.5-35B-A3B (T13, T14) and reuses the store, cache and budget (T15 to T19).
 
-### Open questions (need the creator)
+### Decisions on the former open questions (creator, 24 November 2026)
 
-2. Training a block-8 Bonsai head (T26): first measure the z-lab DFlash block-16 head on Bonsai;
-   training on rented 8 x H100-class GPUs only with approval of cost and data. **Open.**
-3. If Atomic Engine does not load Bonsai `Q2_0` with its DSpark head (T10 checks), the 2x gate
-   applies to the Inkling pair only. **Open.**
-4. `jinzex/Qwen3.5-35B-A3B-DSpark` has no license on its card; check before shipping it (T25a).
-   **Open.**
+- **T26 approved as planned.** First measure the pretrained `z-lab/Qwen3.5-27B-DFlash` head
+  (block 16) on Bonsai in tern. Only if it is insufficient, train our own block-8 head on rented
+  8 x H100-class GPUs, pilot run first.
+- **2x gate scope.** If Atomic Engine cannot run Ternary Bonsai 27B with its DSpark head (T10
+  checks), the 2x Atomic Engine gate (T27) applies to the Inkling pair only.
+- **jinzex head license: none found; not usable until the author confirms one.** Checked 24 Nov
+  2026 on `jinzex/Qwen3.5-35B-A3B-DSpark`: no `license` field in the card metadata, no license
+  text in the README, no LICENSE file at `main` (`9aede6f`) or at tags `v1.0` (`2e8208b`) and
+  `v1.1` (`a306d3e`) (files are only `config.json`, `model.safetensors`, `README.md`), no
+  `__metadata__` in the safetensors header. The upstream base model `Qwen/Qwen3.5-35B-A3B` is
+  Apache-2.0, the training code (NVIDIA Model Optimizer) is Apache-2.0, and the stated training
+  data (Nemotron Post-Training Dataset v2) is CC-BY-4.0, but none of that grants a license to
+  the drafter weights. Until the author publishes a license, T25a may use the head only for local
+  measurements and must not ship it, convert it into a published file or depend on it for a
+  gate. Fallback: train a Qwen3.5-35B-A3B head with the same recipe (in T26's setup).
 
 ### Model shapes
 
@@ -112,12 +122,12 @@ start**:
   30, 37]`, Markov rank 256 (vanilla), confidence head; SPEED-Bench acceptance length 3.97 at
   T = 0.
 
-The brief asks for 7-8 token blocks on Bonsai. The shipped Bonsai head proposes 4. Options, in
-order: (1) ship the block-4 head first (T24), (2) measure the z-lab DFlash block-16 head on
-Bonsai (trained on the bf16 model, acceptance unknown), (3) train a block-8 head (T26), only
-with the creator's go.
+The brief asks for 7-8 token blocks on Bonsai. The shipped Bonsai head proposes 4. Order (decided):
+(1) ship the block-4 head first (T24), (2) measure the z-lab DFlash block-16 head on Bonsai
+(trained on the bf16 model, acceptance unknown), (3) if that is insufficient, train a block-8
+head (T26, approved, pilot first).
 
-### Training a block-8 head (T26, not run without approval)
+### Training a block-8 head (T26, approved)
 
 Recipe: NVIDIA Model Optimizer DSpark example (Model-Optimizer PR #2340, the recipe behind the
 jinzex head) or z-lab's `dflash` trainer, initialised from the prism block-4 head. Target in
@@ -125,7 +135,8 @@ bf16 is needed for hidden-state taps: `prism-ml/Ternary-Bonsai-27B-unpacked` (ab
 Data: responses generated by Ternary Bonsai 27B itself (self-distillation) on an open
 instruction set (for example Nemotron post-training v2, as jinzex used). Where: rented GPUs
 (8 x H100 80 GB class), not the Mac. Order-of-magnitude estimate, to be confirmed by a short
-pilot: tens to a few hundred GPU-hours. Cost and data choice are the creator's decision.
+pilot: tens to a few hundred GPU-hours. Approved by the creator on 24 November 2026, after the
+z-lab DFlash head is measured and found insufficient; the pilot comes first.
 
 ## The `.tern` format, version 2 (T11)
 
@@ -288,7 +299,7 @@ Each PR is one task or one part of one, small enough to review, with its own tok
 | 17 | T22 | Hot-core residency | Zero misses at 14 GiB |
 | 18 | T25b | Inkling DSpark draft | The Atomic configuration in tern |
 | 19 | T27 | The 2x gate run and REPORT.md section | Done or the measured gap |
-| - | T26 | Block-8 Bonsai head (training) | Only with the creator's go |
+| - | T26 | z-lab DFlash on Bonsai, then block-8 head training if needed (approved) | 7-8 token blocks on Bonsai |
 
 ## New dependencies and downloads
 

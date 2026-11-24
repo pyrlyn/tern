@@ -28,7 +28,7 @@ in [moe-dspark.md](moe-dspark.md). Tasks: T10 Atomic baselines, T11 `.tern` v2, 
 converter, T13 resident MoE decode, T14 batched MoE pass, T15 SSD streaming, T16 LRU/ClassLRU,
 T17 prefetch, T18 memory budget, T19 live shrink, T20 Inkling formats, T21 Inkling architecture,
 T22 hot-core residency, T23 block verify, T24 Bonsai DSpark, T25 MoE DSpark, T26 block-8 head
-training (needs the creator's go), T27 the 2x gate.
+(z-lab DFlash first, then training if needed; approved), T27 the 2x gate.
 
 ## Decisions
 

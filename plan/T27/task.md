@@ -12,13 +12,14 @@ The final measurement. On the M3 Max, interleaved with Atomic Engine (T10's harn
 machine): Inkling 2 Mini `AD-IQ2_M` + DSpark at a 14 GiB budget, and Ternary Bonsai 27B + DSpark
 (if Atomic Engine runs pair 2). tern must be at least 2x Atomic Engine's decode tok/s on the
 archive fixture and on the three bench prompts, with greedy tokens equal to the reference and
-default flags. Report the published 105.71 tok/s (M4 Max) and its 2x (211 tok/s) alongside.
+default flags. If Atomic Engine cannot run Ternary Bonsai 27B with its DSpark head (T10), the gate
+applies to the Inkling pair only (creator's decision, 24 November 2026). Report the published 105.71 tok/s (M4 Max) and its 2x (211 tok/s) alongside.
 
 On: Zig 0.17 and Metal (Apple Silicon, measured on the M3 Max 64 GB), no new runtime dependencies.
 
 Components: `bench/compare.py`, `bench/results/`, REPORT.md, README.md goal line. No engine code.
 
-Done means: `>= 2x` Atomic Engine on decode for every prompt of both pairs, tokens equal; otherwise the measured gap and the next lever are written in REPORT.md.
+Done means: `>= 2x` Atomic Engine on decode for every prompt of every gated pair, tokens equal; otherwise the measured gap and the next lever are written in REPORT.md.
 
 Check: `bench/results/atomic_gate.json` with `tern_tps / atomic_tps >= 2.0` per prompt and token equality true.
 
