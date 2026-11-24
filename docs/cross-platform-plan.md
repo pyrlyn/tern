@@ -12,7 +12,11 @@ Wording for this repository: write **`>= 2x`** in every PR description, overview
 
 For throughput (`decode_tps`, `prefill_tps`), `>= 2x` means at least twice the baseline tok/s. For TTFT, `>= 2x` means at most **half** the baseline seconds (twice as fast). `matches_mlx` remains true.
 
-The previous goal in [README.md](../README.md) / [REPORT.md](../REPORT.md) was +40% vs llama.cpp and MLX-LM, and only some prompts cleared it. This plan replaces that bar. Until T1 produces a quiet-machine run, reported gaps use the existing interleaved figures and must be re-measured.
+The previous goal in [README.md](../README.md) / [REPORT.md](../REPORT.md) was +40% vs llama.cpp and MLX-LM, and only some prompts cleared it. This plan replaces that bar for new work against the per-platform baselines below. The +40% wording remains in the README as the earlier Apple Silicon goal.
+
+A second goal, recorded in [README.md](../README.md) and [plan/README.md](../plan/README.md), is to be twice as fast as [Atomic Engine](https://github.com/AtomicBot-ai/atomic-engine), a llama.cpp fork with SSD expert streaming. Their published figure is 105.71 tokens/s on a 48 GB M4 Max (Inkling 2 Mini IQ2_M with a DSpark draft model, 14 GiB budget). The models differ (this plan's harness is Ternary Bonsai 27B), so treat that figure as a named throughput target, not as a drop-in harness baseline.
+
+Until T1 produces a quiet-machine run, reported gaps use the existing interleaved figures and must be re-measured.
 
 This is a hard bar. On Apple Silicon, plain decode is already at the memory floor ([REPORT.md](../REPORT.md)): kernels alone cannot deliver `>= 2x` decode. Prefill on the current Metal path is still behind llama.cpp on the long prompts. On discrete NVIDIA GPUs, llama.cpp's CUDA path is mature. Treat `>= 2x` on all metrics as the acceptance criterion, and record honestly if a metric cannot be reached with a measured reason.
 

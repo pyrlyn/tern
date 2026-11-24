@@ -1,12 +1,15 @@
-# tern
+<h1><picture><source media="(prefers-color-scheme: dark)" srcset="brand/logo-dark.svg"><img src="brand/logo.svg" width="32" height="32" alt="" align="absmiddle"></picture> tern</h1>
 
 Inference runtime for ternary LLMs on Apple Silicon, written in Zig, with Metal compute kernels.
 It runs Ternary Bonsai 27B (Qwen3.5 27B hybrid: 48 gated-delta-net layers, 16 full-attention
 layers, 2-bit ternary weights) and produces the same greedy tokens as MLX-LM.
 
-The goal is to be 40% faster than llama.cpp (Metal) and MLX-LM on an M3 Max. Where it stands is
-in [REPORT.md](REPORT.md); the survey of techniques is in [RESEARCH.md](RESEARCH.md); open work
-is in [plan/](plan/README.md).
+The goals are to be 40% faster than llama.cpp (Metal) and MLX-LM on an M3 Max, and to be
+twice as fast as [Atomic Engine](https://github.com/AtomicBot-ai/atomic-engine) (a llama.cpp
+fork with SSD expert streaming). Atomic Engine's published figure is 105.71 tokens/s on a
+48 GB M4 Max (Inkling 2 Mini IQ2_M with a DSpark draft model, 14 GiB budget). Where it stands
+is in [REPORT.md](REPORT.md); the survey of techniques is in [RESEARCH.md](RESEARCH.md); open
+work is in [plan/](plan/README.md).
 
 ## Build
 
