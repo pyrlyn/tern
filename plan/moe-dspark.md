@@ -47,7 +47,7 @@ needs the block draft and a verify pass that reads the union of experts once (T1
 | Bonsai DSpark head | `prism-ml/Ternary-Bonsai-27B-gguf` @ `86e89f34c93201c3dfd5e5880fedb0022fc7e34d` | `Ternary-Bonsai-27B-dspark-Q4_1.gguf` 1.95 GB, `...-dspark-bf16.gguf` 7.29 GB | **Pretrained, Apache-2.0.** See below |
 | MoE bring-up target | `mlx-community/Qwen3.5-35B-A3B-4bit` @ `1e20fd8d42056f870933bf98ca6211024744f7ec` | 20.4 GB | Same GDN/attention blocks as Bonsai, MLX safetensors, MLX-LM reference |
 | Its DSpark head | `jinzex/Qwen3.5-35B-A3B-DSpark` @ `9aede6f56fa546dbf1f62fe9974d596620fae201` | 1.01 GB bf16 | Block 8, Model Optimizer recipe; no license field on the card |
-| Atomic comparison target | `AtomicChat/Inkling-2-Mini-GGUF` @ `309509848b3151419aa26d069eb03db57fd29a00` | `Inkling-2-Mini-AD-IQ2_M.gguf` 8.67 GB, `dspark-Inkling-2-Mini-Q8_0.gguf` 0.50 GB | Apache-2.0, base `thinkingmachines/Inkling-2-Mini` |
+| Atomic comparison branch | `AtomicChat/Inkling-2-Mini-GGUF` @ `309509848b3151419aa26d069eb03db57fd29a00` | `Inkling-2-Mini-AD-IQ2_M.gguf` 8.67 GB, `dspark-Inkling-2-Mini-Q8_0.gguf` 0.50 GB | Apache-2.0, base `thinkingmachines/Inkling-2-Mini` |
 | Alternative Bonsai draft | `z-lab/Qwen3.5-27B-DFlash` @ `25ee0025ff950496a634e100b75c2db4515e9824` | 4.26 GB bf16 | DFlash, block 16, trained on bf16 Qwen3.5-27B, not on the ternary model |
 
 Why two MoE targets. Qwen3.5-35B-A3B reuses everything tern already has (GDN and attention
@@ -56,6 +56,22 @@ machinery (router, expert GEMV, cache, streaming, budget) can be built and check
 architecture. Inkling 2 Mini is the model Atomic Engine is measured on, and the only one where
 hot-core residency applies, but it needs a new architecture and five new weight formats (T20,
 T21). Both fit an M3 Max 64 GB fully resident (20.4 GB and 8.67 GB).
+
+### Decision: MoE target order (creator, 24 November 2026)
+
+**Qwen3.5-35B-A3B is the first MoE target**, checked against MLX-LM. The MoE machinery (T11 to
+T19, then T25a) is built and gated on it. **Inkling 2 Mini is the Atomic Engine comparison
+branch** (T20, T21, T22, T25b). It starts after the resident and batched MoE paths work on
+Qwen3.5-35B-A3B (T13, T14) and reuses the store, cache and budget (T15 to T19).
+
+### Open questions (need the creator)
+
+2. Training a block-8 Bonsai head (T26): first measure the z-lab DFlash block-16 head on Bonsai;
+   training on rented 8 x H100-class GPUs only with approval of cost and data. **Open.**
+3. If Atomic Engine does not load Bonsai `Q2_0` with its DSpark head (T10 checks), the 2x gate
+   applies to the Inkling pair only. **Open.**
+4. `jinzex/Qwen3.5-35B-A3B-DSpark` has no license on its card; check before shipping it (T25a).
+   **Open.**
 
 ### Model shapes
 

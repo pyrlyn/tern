@@ -15,6 +15,8 @@ requantization: split `ffn_gate_up_exps` (`IQ2_XXS`, `[2304, 2304, 128]`) and `f
 Metal GEMV kernels for `IQ2_XXS`, `Q2_0` g64, `Q8_0`, `Q4_K`, `Q6_K` (expert-indexed where they hold
 experts). Porting ggml's dequantisation tables/kernels is allowed with the MIT notice.
 
+Decision (creator, 24 Nov 2026): Inkling 2 Mini is the Atomic Engine comparison branch, not the first MoE target. Start after [T13](../T13/task.md) and [T14](../T14/task.md) work on Qwen3.5-35B-A3B; reuse the store, cache and budget of T15 to T19.
+
 On: Zig 0.17 and Metal (Apple Silicon, measured on the M3 Max 64 GB), no new runtime dependencies.
 
 Components: `tools/convert.py` (GGUF reader), `src/kernels.metal` (5 formats), `src/model.zig` (dtypes). Zig 0.17 + Metal.

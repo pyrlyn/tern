@@ -15,6 +15,8 @@ slabs, concatenate gate and up per expert like the dense MLP, keep the GDN/atten
 exists. Source: `mlx-community/Qwen3.5-35B-A3B-4bit` @ `1e20fd8d42056f870933bf98ca6211024744f7ec`,
 read only.
 
+Decision (creator, 24 Nov 2026): Qwen3.5-35B-A3B is the first MoE target, checked against MLX-LM; the MoE machinery is built and gated on it before the Inkling branch starts.
+
 On: Zig 0.17 and Metal (Apple Silicon, measured on the M3 Max 64 GB), no new runtime dependencies.
 
 Components: `tools/convert.py` (Python, numpy). No Zig.

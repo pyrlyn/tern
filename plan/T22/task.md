@@ -12,6 +12,8 @@ For looped models, spend spare budget on the repeated core first (Inkling layers
 suffix, then the prefix; shrink releases in reverse. Generic over the loop description in the
 file, no Inkling special case in the cache code.
 
+Decision (creator, 24 Nov 2026): Inkling 2 Mini is the Atomic Engine comparison branch, not the first MoE target. Start after [T13](../T13/task.md) and [T14](../T14/task.md) work on Qwen3.5-35B-A3B; reuse the store, cache and budget of T15 to T19.
+
 On: Zig 0.17 and Metal (Apple Silicon, measured on the M3 Max 64 GB), no new runtime dependencies.
 
 Components: `src/expert.zig` (residency classes), `src/budget.zig`. Zig 0.17.

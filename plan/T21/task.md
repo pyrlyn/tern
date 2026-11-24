@@ -15,6 +15,8 @@ Implement `inkling2_loop` in the engine: 24 physical layers with the core 6-17 r
 attention sinks, router with gate bias and scale 8, gate/up softcaps 4/25, final logit softcap
 30. Follow llama.cpp's `inkling2-loop` graph as the reference.
 
+Decision (creator, 24 Nov 2026): Inkling 2 Mini is the Atomic Engine comparison branch, not the first MoE target. Start after [T13](../T13/task.md) and [T14](../T14/task.md) work on Qwen3.5-35B-A3B; reuse the store, cache and budget of T15 to T19.
+
 On: Zig 0.17 and Metal (Apple Silicon, measured on the M3 Max 64 GB), no new runtime dependencies.
 
 Components: `src/engine.zig` (new layer kinds and visit schedule), `src/kernels.metal` (short conv, relative attention, softcaps), `src/model.zig` (description fields). Zig 0.17 + Metal.

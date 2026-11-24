@@ -15,6 +15,8 @@ indexes `base + id * stride` (no CPU readback, one command buffer per token kept
 SwiGLU, down, weighted sum into the residual, shared expert with its sigmoid gate. The engine
 gets a run-time-shaped MoE path; Bonsai keeps its comptime path.
 
+Decision (creator, 24 Nov 2026): Qwen3.5-35B-A3B is the first MoE target, checked against MLX-LM; the MoE machinery is built and gated on it before the Inkling branch starts.
+
 On: Zig 0.17 and Metal (Apple Silicon, measured on the M3 Max 64 GB), no new runtime dependencies.
 
 Components: `src/kernels.metal` (router/top-k, `gemv_a4_expert`), `src/engine.zig` (`encodeMoe`, layer kinds), `src/model.zig` (run-time shape), `src/metal.zig` if a new binding is needed, `src/main.zig` (model selection). Zig 0.17 + Metal.
