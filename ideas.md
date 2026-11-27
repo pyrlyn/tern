@@ -23,3 +23,10 @@ with SSD expert streaming). Their published figure is 105.71 tokens/s on a
   `--nvme`).
 - CPU bandwidth measurement for the CPU backend (not measured yet).
 - Long-context bench (2k to 4k tokens): the attention value sum grows linearly with context.
+- From the Atomic Engine study (plan/moe-dspark.md), not tasks yet: q4_0 KV cache for long
+  contexts and for the draft's cache; automatic budget shrink on macOS memory-pressure
+  notifications (T19 covers manual shrink only); a route index / known-expert maps to skip
+  planning of unused experts on large MoE graphs; windowed prefill under a tight budget;
+  fused prefill attention for Inkling (TTFT only); saving and restoring a session slot to disk.
+- Ternary-Bonsai-2-27B (`prism-ml/Ternary-Bonsai-2-27B-*`) as a second dense target once T24
+  works; its MTP variants as another draft source.

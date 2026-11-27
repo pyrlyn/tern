@@ -30,6 +30,17 @@ M3 Max) remains the earlier Apple Silicon goal; new work uses the **`>= 2x`**
 bars above.
 
 
+## MoE, SSD expert streaming and DSpark block drafts (T10 to T27)
+
+Goal for this track: **2x Atomic Engine** (published 105.71 tok/s, Inkling 2 Mini IQ2_M + DSpark,
+14 GiB, M4 Max 48 GB; gated same-machine on the M3 Max). The design, model revisions, `.tern` v2
+format, streaming/cache/budget design, DSpark facts and the ordered list of implementation PRs are
+in [moe-dspark.md](moe-dspark.md). Tasks: T10 Atomic baselines, T11 `.tern` v2, T12 Qwen3.5-35B-A3B
+converter, T13 resident MoE decode, T14 batched MoE pass, T15 SSD streaming, T16 LRU/ClassLRU,
+T17 prefetch, T18 memory budget, T19 live shrink, T20 Inkling formats, T21 Inkling architecture,
+T22 hot-core residency, T23 block verify, T24 Bonsai DSpark, T25 MoE DSpark, T26 block-8 head
+(z-lab DFlash first, then training if needed; approved), T27 the 2x gate.
+
 ## Decisions
 
 - The project is in Zig and lives in `~/apps/tern` (the creator's word; it replaces the
