@@ -15,8 +15,19 @@ specified in a separate PR, [pyrlyn/tern#8](https://github.com/pyrlyn/tern/pull/
 On macOS, Linux and Windows, tern must be **`>= 2x`** as fast as that
 platform's fastest realistic baseline on every harness benchmark (decode,
 prefill, TTFT) and every prompt, with greedy tokens unchanged. Details,
-baseline research and the PR-only workflow are in the document above. The
-older +40% wording in README.md and REPORT.md is superseded for new work.
+baseline research and the PR-only workflow are in the document above.
+
+A second goal is to be twice as fast as
+[Atomic Engine](https://github.com/AtomicBot-ai/atomic-engine), a llama.cpp fork
+with SSD expert streaming. Their published figure is 105.71 tokens/s on a
+48 GB M4 Max (Inkling 2 Mini IQ2_M with a DSpark draft model, 14 GiB budget).
+The models differ (tern's harness is Ternary Bonsai 27B; that figure is
+Inkling 2 Mini), so this is a named throughput target, not a drop-in harness
+baseline.
+
+The +40% wording in README.md and REPORT.md (versus llama.cpp and MLX-LM on an
+M3 Max) remains the earlier Apple Silicon goal; new work uses the **`>= 2x`**
+bars above.
 
 
 ## Decisions
@@ -34,6 +45,11 @@ older +40% wording in README.md and REPORT.md is superseded for new work.
 - Speed bar for new work: **`>= 2x`** the fastest baseline on each of macOS,
   Linux and Windows, on every harness metric and prompt (see
   [docs/cross-platform-plan.md](../docs/cross-platform-plan.md)).
+- Also twice as fast as
+  [Atomic Engine](https://github.com/AtomicBot-ai/atomic-engine). Their
+  published figure is 105.71 tokens/s on a 48 GB M4 Max (Inkling 2 Mini
+  IQ2_M with a DSpark draft model, 14 GiB budget). See the Speed bar
+  section above.
 - All changes go through pull requests. Merge only on an explicit request, and
   only with green CI.
 

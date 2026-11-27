@@ -16,6 +16,8 @@ This is the macOS instance of the global bar in [docs/cross-platform-plan.md](..
 
 Today only code_edit decode clears `>= 2x`. Long-prompt prefill and TTFT are behind llama.cpp; free_text and doc_qa decode are not at `>= 2x`.
 
+**Atomic Engine.** A second macOS goal is to be twice as fast as [Atomic Engine](https://github.com/AtomicBot-ai/atomic-engine), a llama.cpp fork with SSD expert streaming. Their published figure is 105.71 tokens/s on a 48 GB M4 Max (Inkling 2 Mini IQ2_M with a DSpark draft model, 14 GiB budget). That model is not Ternary Bonsai 27B, so this is a named throughput target alongside the composite baseline above, not a replacement for the harness check.
+
 Done means: a quiet interleaved `bench/compare.py --rounds 5` (load average below 4, T1 rule) shows tern `>= 2x` the composite baseline on decode, prefill and TTFT for every prompt, and `matches_mlx` is true in every run, with and without `--draft` as shipped by default.
 
 Check: `bench/results/compare.json` (or the quiet-run successor named in REPORT.md) has tern at `>= 2x` vs `max(llama.cpp, MLX-LM)` on `decode_tps` and `prefill_tps`, and at `<= 1/2` of the faster engine's `ttft_s`, for `free_text`, `code_edit` and `doc_qa`, with `matches_mlx` true.

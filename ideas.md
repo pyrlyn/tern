@@ -2,6 +2,12 @@
 
 Not approved. Nothing here is a task until the creator says so.
 
+Approved speed goals live in [README.md](README.md) and [plan/README.md](plan/README.md).
+One of them is to be twice as fast as
+[Atomic Engine](https://github.com/AtomicBot-ai/atomic-engine) (a llama.cpp fork
+with SSD expert streaming). Their published figure is 105.71 tokens/s on a
+48 GB M4 Max (Inkling 2 Mini IQ2_M with a DSpark draft model, 14 GiB budget).
+
 - Dense trit packing: 5 trits per byte (1.6 bits per weight) lowers the memory floor of decode
   by 20%. The decode cost on the GPU has to stay below that; the 256-entry table tried for the
   2-bit format was 4 to 5 times slower than arithmetic, so the decode has to be arithmetic too.
